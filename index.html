@@ -715,6 +715,8 @@
             history.pushState({ screen: 'collection' }, '');
         }
 
+        let suppressNextPopstate = false;
+
         function goBackToCollections(fromPopstate) {
             if (leafletMap) { leafletMap.remove(); leafletMap = null; }
             countryLayers = {};
@@ -722,7 +724,10 @@
             document.getElementById('login-box').style.display = 'block';
             contentEl.innerHTML = '<p>Loading your collections...</p>';
             showCollectionsScreen();
-            if (!fromPopstate) history.back(); // consumes the 'collection' state we pushed when it opened
+            if (!fromPopstate) {
+                suppressNextPopstate = true;
+                history.back(); // consumes the 'collection' state we pushed when it opened
+            }
         }
         document.getElementById('back-btn').onclick = () => goBackToCollections(false);
 
@@ -730,6 +735,7 @@
         // step back to "My Collections" first, instead of leaving the site
         // immediately - each "screen" we enter pushes a history state.
         window.addEventListener('popstate', () => {
+            if (suppressNextPopstate) { suppressNextPopstate = false; return; }
             if (modal.style.display === 'block') {
                 closeModal(true);
             } else if (document.getElementById('collection-view').style.display === 'flex') {
@@ -1140,7 +1146,10 @@
             modal.style.display = 'none';
             modalBackdrop.style.display = 'none';
             document.getElementById('cv-main').classList.remove('dimmed');
-            if (!fromPopstate) history.back(); // consumes the 'modal' state we pushed when it opened
+            if (!fromPopstate) {
+                suppressNextPopstate = true;
+                history.back(); // consumes the 'modal' state we pushed when it opened
+            }
         }
         modalBackdrop.onclick = () => closeModal(false);
 
@@ -1431,6 +1440,54 @@ ${bodyHtml}
             };
         }
 
+        // ---------- Geometry simplification (Douglas-Peucker) ----------
+        // The country boundary file is very detailed (precise coastlines),
+        // which is more data than this app's zoom levels actually need and
+        // makes panning/zooming feel sluggish, especially on phones. This
+        // reduces the number of points per shape while keeping the same
+        // overall outline.
+        function perpendicularDistance(p, a, b) {
+            const [x, y] = p, [x1, y1] = a, [x2, y2] = b;
+            const dx = x2 - x1, dy = y2 - y1;
+            if (dx === 0 && dy === 0) return Math.hypot(x - x1, y - y1);
+            const t = ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy);
+            const px = x1 + t * dx, py = y1 + t * dy;
+            return Math.hypot(x - px, y - py);
+        }
+
+        function douglasPeucker(points, epsilon) {
+            if (points.length < 3) return points;
+            let dmax = 0, index = 0;
+            const end = points.length - 1;
+            for (let i = 1; i < end; i++) {
+                const d = perpendicularDistance(points[i], points[0], points[end]);
+                if (d > dmax) { index = i; dmax = d; }
+            }
+            if (dmax > epsilon) {
+                const left = douglasPeucker(points.slice(0, index + 1), epsilon);
+                const right = douglasPeucker(points.slice(index), epsilon);
+                return left.slice(0, -1).concat(right);
+            }
+            return [points[0], points[end]];
+        }
+
+        function simplifyRing(ring, epsilon) {
+            const simplified = douglasPeucker(ring, epsilon);
+            return simplified.length >= 4 ? simplified : ring; // a valid ring needs at least 4 points
+        }
+
+        function simplifyGeoData(geoData, epsilon) {
+            geoData.features.forEach(f => {
+                const g = f.geometry;
+                if (!g) return;
+                if (g.type === 'Polygon') {
+                    g.coordinates = g.coordinates.map(ring => simplifyRing(ring, epsilon));
+                } else if (g.type === 'MultiPolygon') {
+                    g.coordinates = g.coordinates.map(poly => poly.map(ring => simplifyRing(ring, epsilon)));
+                }
+            });
+        }
+
         // ---------- Map ----------
         async function initMap() {
             countryLayers = {};
@@ -1445,6 +1502,7 @@ ${bodyHtml}
             }).setView([20, 10], 2);
 
             const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
+            simplifyGeoData(geoData, 0.02); // fewer points per shape = much lighter panning/zooming, especially on phones
 
             const NAME_TO_CODE_OVERRIDE = { 'France': 'FRA', 'Norway': 'NOR', 'Somaliland': 'SLD' };
             function getCodeForFeature(feature) {
