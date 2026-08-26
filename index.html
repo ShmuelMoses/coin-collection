@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>My Collections</title>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="https://apis.google.com/js/api.js"></script>
@@ -80,13 +81,24 @@
         }
         #cv-title { font-size: 16px; margin: 0 0 16px 0; color: var(--accent-owned); }
 
-        /* Phones: narrower sidebar so the map/list keep most of the screen */
+        /* Phones: sidebar becomes a compact bar across the TOP instead of
+           down the side, so it blocks as little of the map as possible */
         @media (max-width: 700px) {
-            #cv-sidebar { width: 148px; padding: 12px 10px; }
-            #cv-title { font-size: 13px; margin-bottom: 10px; }
-            .view-toggle button { padding: 6px 4px; font-size: 12px; }
-            .legend-btn, #reset-btn, #back-btn { font-size: 11px; padding: 6px 6px; }
+            #collection-view { flex-direction: column; }
+            #cv-sidebar {
+                width: 100%; height: auto;
+                border-right: none; border-bottom: 1px solid var(--border);
+                display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+                padding: 8px 10px;
+            }
+            #cv-title { font-size: 14px; margin: 0 8px 0 0; flex-shrink: 0; }
+            .view-toggle { margin-bottom: 0; flex-shrink: 0; width: auto; }
+            .view-toggle button { padding: 6px 10px; font-size: 12px; }
+            .search-wrap { margin-bottom: 0; flex: 1 1 140px; min-width: 100px; }
             #search-box, #search-ghost { font-size: 12px; padding: 6px 8px; }
+            #map-only-controls { display: none !important; } /* Reset view - map-only, redundant with pinch/drag on touch */
+            .legend-btn { font-size: 11px; padding: 6px 8px; margin-bottom: 0; width: auto; }
+            #back-btn { font-size: 11px; padding: 6px 8px; width: auto; margin-top: 0; }
             .box { max-width: 92vw; padding: 24px 20px; }
         }
         .view-toggle { display: flex; border-radius: 6px; overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border); }
@@ -121,6 +133,12 @@
         .leaflet-control-zoom a { background: var(--panel-alt) !important; color: var(--text) !important; border: 1px solid var(--border) !important; }
         .leaflet-control-zoom a:hover { background: var(--accent-owned) !important; color: #04222c !important; }
         .leaflet-control-zoom { border: none !important; box-shadow: 0 2px 8px rgba(0,0,0,0.4) !important; }
+
+        /* Touchscreens already have pinch-to-zoom on the map - the +/-
+           buttons are redundant clutter there, so hide them */
+        @media (hover: none) and (pointer: coarse) {
+            .leaflet-control-zoom { display: none !important; }
+        }
         #list-view {
             display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             overflow-y: auto; padding: 20px; background: var(--bg-translucent); z-index: 400;
@@ -267,9 +285,23 @@
                     await gapi.client.init({ apiKey: API_KEY });
                     await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest');
                     gapiReady = true;
+
                     const btn = document.getElementById('signin-btn');
                     btn.disabled = false;
                     btn.textContent = 'Sign in with Google';
+
+                    // Set up the token client once, then try a SILENT sign-in
+                    // first (prompt:''). If you've already granted access
+                    // before and still have an active Google session in this
+                    // browser, this logs you back in automatically with no
+                    // click needed - only falling back to the visible button
+                    // if that silent attempt doesn't produce a token.
+                    tokenClient = google.accounts.oauth2.initTokenClient({
+                        client_id: CLIENT_ID,
+                        scope: SCOPES,
+                        callback: handleTokenResponse,
+                    });
+                    tokenClient.requestAccessToken({ prompt: '' });
                 } catch (err) {
                     console.error(err);
                     setStatus('Failed to load Google API: ' + (err.message || JSON.stringify(err)));
@@ -278,27 +310,23 @@
         }
         window.onload = loadGapiClient;
 
+        async function handleTokenResponse(response) {
+            if (!response.access_token) {
+                return; // silent attempt found no existing session - just wait for the button
+            }
+            accessToken = response.access_token;
+            gapi.client.setToken({ access_token: accessToken });
+            setStatus('Loading your collections...');
+            try {
+                await showCollectionsScreen();
+            } catch (err) {
+                console.error(err);
+                setStatus('Error: ' + (err.message || JSON.stringify(err)));
+            }
+        }
+
         // ---------- Step 2: sign in with Google (gets an access token) ----------
         document.getElementById('signin-btn').onclick = () => {
-            tokenClient = google.accounts.oauth2.initTokenClient({
-                client_id: CLIENT_ID,
-                scope: SCOPES,
-                callback: async (response) => {
-                    if (!response.access_token) {
-                        setStatus('Sign-in failed.');
-                        return;
-                    }
-                    accessToken = response.access_token;
-                    gapi.client.setToken({ access_token: accessToken });
-                    setStatus('Loading your collections...');
-                    try {
-                        await showCollectionsScreen();
-                    } catch (err) {
-                        console.error(err);
-                        setStatus('Error: ' + (err.message || JSON.stringify(err)));
-                    }
-                },
-            });
             tokenClient.requestAccessToken();
         };
 
@@ -684,16 +712,31 @@
             initCollectionViewUI();
             await initMap();
             renderList(); // after initMap, so COUNTRY_NAME_LOOKUP (all world countries) is populated
+            history.pushState({ screen: 'collection' }, '');
         }
 
-        document.getElementById('back-btn').onclick = () => {
+        function goBackToCollections(fromPopstate) {
             if (leafletMap) { leafletMap.remove(); leafletMap = null; }
             countryLayers = {};
             document.getElementById('collection-view').style.display = 'none';
             document.getElementById('login-box').style.display = 'block';
             contentEl.innerHTML = '<p>Loading your collections...</p>';
             showCollectionsScreen();
-        };
+            if (!fromPopstate) history.back(); // consumes the 'collection' state we pushed when it opened
+        }
+        document.getElementById('back-btn').onclick = () => goBackToCollections(false);
+
+        // Makes the phone's hardware/gesture back button close a modal or
+        // step back to "My Collections" first, instead of leaving the site
+        // immediately - each "screen" we enter pushes a history state.
+        window.addEventListener('popstate', () => {
+            if (modal.style.display === 'block') {
+                closeModal(true);
+            } else if (document.getElementById('collection-view').style.display === 'flex') {
+                goBackToCollections(true);
+            }
+            // otherwise: no app screen open, let the browser leave normally
+        });
 
         // ---------- Manual categories / sort order (per collection, per
         // country) - saved to Drive appData so it's the same on every
@@ -1090,14 +1133,16 @@
             modal.style.display = 'block';
             modalBackdrop.style.display = 'block';
             document.getElementById('cv-main').classList.add('dimmed');
+            history.pushState({ screen: 'modal' }, '');
         }
 
-        function closeModal() {
+        function closeModal(fromPopstate) {
             modal.style.display = 'none';
             modalBackdrop.style.display = 'none';
             document.getElementById('cv-main').classList.remove('dimmed');
+            if (!fromPopstate) history.back(); // consumes the 'modal' state we pushed when it opened
         }
-        modalBackdrop.onclick = closeModal;
+        modalBackdrop.onclick = () => closeModal(false);
 
         // ---------- Share: builds one self-contained HTML file with all
         // of a country's images embedded directly (base64) - no Drive
@@ -1137,14 +1182,21 @@
         // browsers) when available; otherwise falls back to a normal file
         // download, which works everywhere.
         async function shareOrDownloadFile(blob, filename) {
-            const file = new File([blob], filename, { type: 'text/html' });
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                try {
-                    await navigator.share({ files: [file], title: filename });
-                    return;
-                } catch (err) {
-                    if (err.name === 'AbortError') return; // user cancelled the share sheet
-                    // otherwise fall through to download as a backup
+            if (navigator.share) {
+                const file = new File([blob], filename, { type: 'text/html' });
+                // Some Android browsers report canShare()=false for
+                // text/html specifically even though sharing still works,
+                // so we don't let that check block us - only a real
+                // failure from navigator.share falls back to download.
+                const canTry = !navigator.canShare || navigator.canShare({ files: [file] });
+                if (canTry) {
+                    try {
+                        await navigator.share({ files: [file], title: filename });
+                        return;
+                    } catch (err) {
+                        if (err.name === 'AbortError') return; // user cancelled the share sheet
+                        console.error('Share failed, falling back to download:', err);
+                    }
                 }
             }
             const a = document.createElement('a');
