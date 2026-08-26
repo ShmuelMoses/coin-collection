@@ -1,0 +1,1500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>My Collections</title>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script src="https://apis.google.com/js/api.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        :root {
+            --bg-solid: #0f172a;
+            --bg-translucent: rgba(15, 23, 42, 0.82);
+            --panel-alt: #1e293b;
+            --accent-owned: #22d3ee;
+            --accent-none: #f43f5e;
+            --muted: #475569;
+            --text: #e2e8f0;
+            --text-dim: rgba(226,232,240,0.55);
+            --border: rgba(226,232,240,0.15);
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .box {
+            background: #1e293b;
+            padding: 30px 40px;
+            border-radius: 12px;
+            width: 360px;
+            text-align: center;
+        }
+        h1 { font-size: 20px; margin-bottom: 20px; }
+        button {
+            width: 100%;
+            padding: 12px;
+            margin-top: 12px;
+            border-radius: 6px;
+            border: none;
+            font-size: 15px;
+            cursor: pointer;
+        }
+        .primary-btn { background: #22d3ee; color: #04222c; font-weight: bold; }
+        .collection-item {
+            background: #0f172a;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 10px;
+            cursor: pointer;
+            text-align: left;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .collection-item:hover { border-color: #22d3ee; }
+        .delete-collection-btn {
+            width: auto; margin: 0; padding: 4px 8px; background: transparent;
+            border: 1px solid transparent; color: #64748b; font-size: 15px; border-radius: 6px;
+        }
+        .delete-collection-btn:hover { background: rgba(255,255,255,0.08); color: #94a3b8; }
+        #status { font-size: 13px; color: #94a3b8; margin-top: 16px; }
+
+        /* ===== Collection view (map/list/search/modal) ===== */
+        #collection-view { display: flex; height: 100vh; width: 100vw; position: fixed; top:0; left:0; }
+        #cv-sidebar {
+            width: 230px; flex-shrink: 0; background: var(--bg-solid); color: var(--text);
+            padding: 20px; border-right: 1px solid var(--border); overflow-y: auto;
+        }
+        #back-btn {
+            width: 100%; background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+            padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-top: 24px;
+        }
+        #cv-title { font-size: 16px; margin: 0 0 16px 0; color: var(--accent-owned); }
+
+        /* Phones: narrower sidebar so the map/list keep most of the screen */
+        @media (max-width: 700px) {
+            #cv-sidebar { width: 148px; padding: 12px 10px; }
+            #cv-title { font-size: 13px; margin-bottom: 10px; }
+            .view-toggle button { padding: 6px 4px; font-size: 12px; }
+            .legend-btn, #reset-btn, #back-btn { font-size: 11px; padding: 6px 6px; }
+            #search-box, #search-ghost { font-size: 12px; padding: 6px 8px; }
+            .box { max-width: 92vw; padding: 24px 20px; }
+        }
+        .view-toggle { display: flex; border-radius: 6px; overflow: hidden; margin-bottom: 16px; border: 1px solid var(--border); }
+        .view-toggle button { flex: 1; padding: 8px; border: none; background: var(--panel-alt); color: var(--text); cursor: pointer; font-size: 14px; }
+        .view-toggle button.active { background: var(--accent-owned); color: #04222c; font-weight: bold; }
+        .search-wrap { position: relative; margin-bottom: 16px; }
+        #search-box, #search-ghost {
+            width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+            font-size: 14px; background: transparent; color: var(--text);
+        }
+        #search-box { position: relative; z-index: 2; }
+        #search-ghost { position: absolute; top: 0; left: 0; background: var(--panel-alt); color: var(--text-dim); pointer-events: none; z-index: 1; }
+        .legend-btn {
+            display: flex; align-items: center; gap: 8px; width: 100%; background: var(--panel-alt);
+            border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: 6px;
+            cursor: pointer; font-size: 13px; margin-bottom: 8px;
+        }
+        .legend-btn.active { border-color: currentColor; background: rgba(255,255,255,0.08); }
+        .legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+        #reset-btn {
+            width: 100%; margin-top: 6px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border);
+            background: transparent; color: var(--text-dim); cursor: pointer; font-size: 13px;
+        }
+        #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
+        #cv-main.dimmed { filter: brightness(0.55); }
+        #map { height: 100%; width: 100%; background: #0b1526; }
+        .country-label {
+            background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
+            color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
+        }
+        .leaflet-container path:focus { outline: none; }
+        .leaflet-control-zoom a { background: var(--panel-alt) !important; color: var(--text) !important; border: 1px solid var(--border) !important; }
+        .leaflet-control-zoom a:hover { background: var(--accent-owned) !important; color: #04222c !important; }
+        .leaflet-control-zoom { border: none !important; box-shadow: 0 2px 8px rgba(0,0,0,0.4) !important; }
+        #list-view {
+            display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            overflow-y: auto; padding: 20px; background: var(--bg-translucent); z-index: 400;
+        }
+        .country-item {
+            background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 8px;
+            padding: 12px 16px; margin-bottom: 10px; cursor: pointer; display: flex;
+            justify-content: space-between; align-items: center; color: var(--text);
+        }
+        .country-item:hover { background: rgba(34,211,238,0.15); border-color: var(--accent-owned); }
+        .country-item .count { color: var(--accent-owned); font-weight: bold; }
+        #modal-backdrop { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: transparent; z-index: 1000; }
+        #modal {
+            display: none; position: fixed; top: 8%; left: 50%; transform: translateX(-50%);
+            width: fit-content; max-width: 90%; max-height: 80%; overflow-y: auto;
+            background: var(--bg-translucent); backdrop-filter: blur(6px); color: var(--text);
+            border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 30px rgba(0,0,0,0.6);
+            z-index: 1001; padding: 20px;
+        }
+        #modal h2 { margin: 0; color: var(--accent-owned); line-height: 1; }
+        #modal-header {
+            position: relative; text-align: center; padding: 0 42px; margin-bottom: 18px;
+        }
+        #share-icon-btn, #share-confirm-icon-btn, #share-cancel-icon-btn,
+        #organize-icon-btn, #organize-confirm-icon-btn, #organize-cancel-icon-btn {
+            position: absolute; top: 50%; transform: translateY(-50%);
+            width: auto; padding: 0; background: transparent; border: none;
+            color: var(--accent-owned); cursor: pointer; display: flex; align-items: center;
+        }
+        #share-icon-btn { right: 0; }
+        #share-confirm-icon-btn { right: 0; }
+        #share-cancel-icon-btn { right: 34px; color: var(--accent-none); }
+        #organize-icon-btn { left: 0; color: var(--text-dim); }
+        #organize-confirm-icon-btn { left: 0; }
+        #organize-cancel-icon-btn { left: 34px; color: var(--accent-none); }
+        #share-icon-btn:hover, #share-confirm-icon-btn:hover,
+        #organize-icon-btn:hover, #organize-confirm-icon-btn:hover { opacity: 0.75; }
+        .share-checkbox {
+            position: absolute; top: 6px; left: 6px; width: 18px; height: 18px;
+            accent-color: var(--accent-owned); cursor: pointer; display: none;
+        }
+        #modal-images { display: block; }
+        #modal-images img {
+            width: 130px; height: 130px; object-fit: contain; background: rgba(255,255,255,0.06);
+            border-radius: 6px; border: 1px solid var(--border); cursor: pointer; padding: 4px;
+            display: block;
+        }
+        #enlarge-overlay {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); z-index: 2000; text-align: center;
+        }
+        #enlarge-overlay img { max-width: 90%; max-height: 90%; margin-top: 5vh; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+    <div class="box" id="login-box">
+        <h1 id="title">My Collections</h1>
+        <div id="content">
+            <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
+        </div>
+        <div id="status"></div>
+    </div>
+
+    <!-- ===== Full collection view (map / list / search / modal) ===== -->
+    <div id="collection-view" style="display:none;">
+        <div id="cv-sidebar">
+            <h1 id="cv-title"></h1>
+            <div class="view-toggle">
+                <button id="btn-map" class="active">Map</button>
+                <button id="btn-list">List</button>
+            </div>
+            <div class="search-wrap">
+                <input type="text" id="search-ghost" tabindex="-1" disabled>
+                <input type="text" id="search-box" placeholder="Search country" autocomplete="off">
+            </div>
+            <button id="filter-owned" class="legend-btn">
+                <span class="legend-dot" style="background:var(--accent-owned);"></span> Have items
+            </button>
+            <button id="filter-none" class="legend-btn">
+                <span class="legend-dot" style="background:var(--accent-none);"></span> None yet
+            </button>
+            <div id="map-only-controls">
+                <button id="reset-btn">&#8634; Reset view</button>
+            </div>
+            <button id="back-btn">&larr; My Collections</button>
+        </div>
+        <div id="cv-main">
+            <div id="map"></div>
+            <div id="list-view"></div>
+        </div>
+        <div id="modal-backdrop"></div>
+        <div id="modal">
+            <div id="modal-header">
+                <button id="organize-icon-btn" title="Organize into categories">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+                <button id="organize-confirm-icon-btn" title="Save changes" style="display:none;">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
+                </button>
+                <button id="organize-cancel-icon-btn" title="Discard changes" style="display:none;">
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+                </button>
+                <h2 id="modal-title"></h2>
+                <button id="share-icon-btn" title="Share this country">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/></svg>
+                </button>
+                <button id="share-confirm-icon-btn" title="Share selected" style="display:none;">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
+                </button>
+                <button id="share-cancel-icon-btn" title="Cancel" style="display:none;">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+                </button>
+            </div>
+            <div id="modal-images"></div>
+        </div>
+        <div id="enlarge-overlay">
+            <img id="enlarge-img" src="">
+        </div>
+    </div>
+
+    <script>
+        // ==== FILL THESE IN ====
+        const CLIENT_ID = '252654816217-o1aq4hj15j9mpb3ldtor3dpq8r3ruk6h.apps.googleusercontent.com';
+        const API_KEY = 'AIzaSyAJr_VFFCgezqt0si7LvoZSdCqkuMonFPk';
+        // ========================
+
+        const SCOPES = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.appdata';
+        const COLLECTIONS_FILENAME = 'collections.json';
+
+        let tokenClient;
+        let accessToken = null;
+        let gapiReady = false;
+
+        const statusEl = document.getElementById('status');
+        const contentEl = document.getElementById('content');
+
+        function setStatus(msg) { statusEl.textContent = msg; }
+
+        // ---------- Step 1: load the Google API client (for Drive + Picker) ----------
+        function loadGapiClient() {
+            gapi.load('client:picker', async () => {
+                try {
+                    await gapi.client.init({ apiKey: API_KEY });
+                    await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest');
+                    gapiReady = true;
+                    const btn = document.getElementById('signin-btn');
+                    btn.disabled = false;
+                    btn.textContent = 'Sign in with Google';
+                } catch (err) {
+                    console.error(err);
+                    setStatus('Failed to load Google API: ' + (err.message || JSON.stringify(err)));
+                }
+            });
+        }
+        window.onload = loadGapiClient;
+
+        // ---------- Step 2: sign in with Google (gets an access token) ----------
+        document.getElementById('signin-btn').onclick = () => {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: async (response) => {
+                    if (!response.access_token) {
+                        setStatus('Sign-in failed.');
+                        return;
+                    }
+                    accessToken = response.access_token;
+                    gapi.client.setToken({ access_token: accessToken });
+                    setStatus('Loading your collections...');
+                    try {
+                        await showCollectionsScreen();
+                    } catch (err) {
+                        console.error(err);
+                        setStatus('Error: ' + (err.message || JSON.stringify(err)));
+                    }
+                },
+            });
+            tokenClient.requestAccessToken();
+        };
+
+        // ---------- Step 3: read the saved collections list from Drive's
+        // hidden "appDataFolder" (a private space only this app can see) ----------
+        async function loadCollections() {
+            const listResp = await gapi.client.drive.files.list({
+                spaces: 'appDataFolder',
+                q: `name='${COLLECTIONS_FILENAME}'`,
+                fields: 'files(id, name)'
+            });
+            const files = listResp.result.files;
+            if (files.length === 0) return { fileId: null, collections: [] };
+
+            const fileId = files[0].id;
+            const contentResp = await gapi.client.drive.files.get({ fileId, alt: 'media' });
+            const collections = JSON.parse(contentResp.body || '[]');
+            return { fileId, collections };
+        }
+
+        // ---------- Step 4: save the collections list back to appDataFolder ----------
+        async function saveCollections(fileId, collections) {
+            const content = JSON.stringify(collections);
+            const boundary = '-------314159265358979323846';
+            const metadata = { name: COLLECTIONS_FILENAME, mimeType: 'application/json' };
+            if (!fileId) metadata.parents = ['appDataFolder'];
+
+            const multipartBody =
+                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+
+            const path = fileId
+                ? `/upload/drive/v3/files/${fileId}?uploadType=multipart`
+                : `/upload/drive/v3/files?uploadType=multipart`;
+
+            const resp = await gapi.client.request({
+                path,
+                method: fileId ? 'PATCH' : 'POST',
+                headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+                body: multipartBody
+            });
+            return resp.result.id;
+        }
+
+        // ---------- Step 5: render the "choose / create collection" screen ----------
+        async function showCollectionsScreen() {
+            const { fileId, collections } = await loadCollections();
+            window._collectionsState = { fileId, collections }; // stashed for the add-flow below
+            setStatus('');
+
+            if (collections.length === 0) {
+                contentEl.innerHTML = `<p style="font-size:14px;color:#94a3b8;">You don't have any collections yet.</p>`;
+                const btn = document.createElement('button');
+                btn.className = 'primary-btn';
+                btn.textContent = '+ Create your first collection';
+                btn.onclick = addNewCollection;
+                contentEl.appendChild(btn);
+                return;
+            }
+
+            contentEl.innerHTML = '';
+            collections.forEach((col, idx) => {
+                const item = document.createElement('div');
+                item.className = 'collection-item';
+
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = col.name;
+                nameSpan.style.flex = '1';
+                nameSpan.onclick = () => openCollection(col);
+                item.appendChild(nameSpan);
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'delete-collection-btn';
+                delBtn.innerHTML = '&#128465;'; // grey trash can icon
+                delBtn.title = 'Remove this collection';
+                delBtn.onclick = (e) => { e.stopPropagation(); deleteCollection(col, fileId, collections, idx); };
+                item.appendChild(delBtn);
+
+                contentEl.appendChild(item);
+            });
+            const addBtn = document.createElement('button');
+            addBtn.className = 'primary-btn';
+            addBtn.textContent = '+ Add new collection';
+            addBtn.onclick = addNewCollection;
+            contentEl.appendChild(addBtn);
+        }
+
+        async function deleteCollection(col, fileId, collections, idx) {
+            const confirmed = confirm(
+                `Remove "${col.name}" from your collections list?\n\n` +
+                `This only removes it from this app - the folder and all photos ` +
+                `stay exactly as they are in your Google Drive.`
+            );
+            if (!confirmed) return;
+
+            const updated = collections.slice();
+            updated.splice(idx, 1); // remove exactly this one entry, by position
+            setStatus('Removing...');
+            const newFileId = await saveCollections(fileId, updated);
+            window._collectionsState = { fileId: newFileId, collections: updated };
+            await showCollectionsScreen();
+        }
+
+        // ---------- Step 6: "Add new collection" - opens the Google Picker
+        // so the user selects a folder from their own Drive ----------
+        function addNewCollection() {
+            const picker = new google.picker.PickerBuilder()
+                .addView(new google.picker.DocsView(google.picker.ViewId.FOLDERS)
+                    .setSelectFolderEnabled(true)
+                    .setIncludeFolders(true))
+                .setOAuthToken(accessToken)
+                .setDeveloperKey(API_KEY)
+                .setCallback(pickerCallback)
+                .build();
+            picker.setVisible(true);
+        }
+
+        async function pickerCallback(data) {
+            if (data.action !== google.picker.Action.PICKED) return;
+
+            const folder = data.docs[0];
+            const displayName = prompt('Name this collection:', folder.name) || folder.name;
+
+            const { fileId, collections } = window._collectionsState;
+            collections.push({ id: folder.id, name: displayName });
+
+            setStatus('Saving...');
+            const newFileId = await saveCollections(fileId, collections);
+            window._collectionsState = { fileId: newFileId, collections };
+
+            await showCollectionsScreen();
+        }
+
+        // ---------- Image cache (IndexedDB) - the browser-side equivalent
+        // of the old "image_cache" folder on disk from the Flask version ----------
+        let dbPromise = null;
+
+        // Asks the browser not to auto-evict our cached images under
+        // storage pressure. Not guaranteed (especially on Safari), but it
+        // meaningfully reduces the chance of the cache being cleared.
+        if (navigator.storage && navigator.storage.persist) {
+            navigator.storage.persist().then(granted => {
+                console.log('Persistent storage granted:', granted);
+            });
+        }
+
+        function getDB() {
+            if (dbPromise) return dbPromise;
+            dbPromise = new Promise((resolve, reject) => {
+                const request = indexedDB.open('coin_collection_cache', 1);
+                request.onupgradeneeded = () => {
+                    request.result.createObjectStore('images');
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+            return dbPromise;
+        }
+
+        async function cacheGet(key) {
+            const db = await getDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('images', 'readonly');
+                const req = tx.objectStore('images').get(key);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function cacheSet(key, blob) {
+            const db = await getDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('images', 'readwrite');
+                tx.objectStore('images').put(blob, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function cacheDelete(key) {
+            const db = await getDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('images', 'readwrite');
+                tx.objectStore('images').delete(key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        // Since Google's fast thumbnailLink CDN blocks browser access (see
+        // above), we download the full image once and shrink it ourselves
+        // with a canvas - then cache that small version separately, so
+        // every viewing after the first is instant with no network at all.
+        async function fetchFullImageBlob(fileId) {
+            const cacheKey = fileId + '_full';
+            const cached = await cacheGet(cacheKey);
+            if (cached) {
+                if (cached.type && cached.type.startsWith('image/')) return cached;
+                // A bad (non-image) response got cached previously - throw
+                // it away and fetch fresh instead of failing forever.
+                await cacheDelete(cacheKey);
+            }
+
+            const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+                headers: { Authorization: 'Bearer ' + accessToken }
+            });
+            if (!resp.ok) {
+                const text = await resp.text().catch(() => '');
+                throw new Error(`Drive returned ${resp.status} for file ${fileId}: ${text.slice(0, 300)}`);
+            }
+            const blob = await resp.blob();
+            if (!blob.type.startsWith('image/')) {
+                const text = await blob.text().catch(() => '');
+                throw new Error(`Drive did not return image data for file ${fileId} (got "${blob.type}"): ${text.slice(0, 300)}`);
+            }
+            await cacheSet(cacheKey, blob);
+            return blob;
+        }
+
+        function resizeImageBlob(blob, maxDim) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                const objUrl = URL.createObjectURL(blob);
+                img.onload = () => {
+                    let { width, height } = img;
+                    if (width > height) {
+                        if (width > maxDim) { height *= maxDim / width; width = maxDim; }
+                    } else {
+                        if (height > maxDim) { width *= maxDim / height; height = maxDim; }
+                    }
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width; canvas.height = height;
+                    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                    canvas.toBlob(resolve, 'image/jpeg', 0.82);
+                    URL.revokeObjectURL(objUrl);
+                };
+                img.onerror = () => {
+                    reject(new Error(`Could not decode image (blob type="${blob.type}", size=${blob.size} bytes)`));
+                };
+                img.src = objUrl;
+            });
+        }
+
+        async function getThumbnailBlobUrl(fileId) {
+            const cacheKey = fileId + '_thumb';
+            const cached = await cacheGet(cacheKey);
+            if (cached) return URL.createObjectURL(cached);
+
+            const fullBlob = await fetchFullImageBlob(fileId);
+            const thumbBlob = await resizeImageBlob(fullBlob, 220);
+            await cacheSet(cacheKey, thumbBlob);
+            return URL.createObjectURL(thumbBlob);
+        }
+
+        async function getFullImageBlobUrl(fileId) {
+            const blob = await fetchFullImageBlob(fileId);
+            return URL.createObjectURL(blob);
+        }
+
+        // English names for country codes (folder names in Drive) - same
+        // table used in the earlier Flask version, so historical/unusual
+        // entities are covered too, not just current recognized countries.
+        const COUNTRY_NAMES = {
+            'AFG': 'Afghanistan', 'ALB': 'Albania', 'DZA': 'Algeria', 'AND': 'Andorra',
+            'AGO': 'Angola', 'ARG': 'Argentina', 'ARM': 'Armenia', 'AUS': 'Australia',
+            'AUT': 'Austria', 'AZE': 'Azerbaijan', 'BHS': 'Bahamas', 'BHR': 'Bahrain',
+            'BGD': 'Bangladesh', 'BRB': 'Barbados', 'BLR': 'Belarus', 'BEL': 'Belgium',
+            'BLZ': 'Belize', 'BEN': 'Benin', 'BTN': 'Bhutan', 'BOL': 'Bolivia',
+            'BIH': 'Bosnia and Herzegovina', 'BWA': 'Botswana', 'BRA': 'Brazil',
+            'BRN': 'Brunei', 'BGR': 'Bulgaria', 'BFA': 'Burkina Faso', 'BDI': 'Burundi',
+            'KHM': 'Cambodia', 'CMR': 'Cameroon', 'CAN': 'Canada', 'CPV': 'Cabo Verde',
+            'CAF': 'Central African Republic', 'TCD': 'Chad', 'CHL': 'Chile',
+            'CHN': 'China', 'COL': 'Colombia', 'COM': 'Comoros', 'COG': 'Congo',
+            'CRC': 'Costa Rica', 'HRV': 'Croatia', 'CUB': 'Cuba', 'CYP': 'Cyprus',
+            'CZE': 'Czech Republic', 'CSK': 'Czechoslovakia', 'DNK': 'Denmark',
+            'DJI': 'Djibouti', 'DOM': 'Dominican Republic', 'DDR': 'East Germany',
+            'ECU': 'Ecuador', 'EGY': 'Egypt', 'SLV': 'El Salvador',
+            'GNQ': 'Equatorial Guinea', 'ERI': 'Eritrea', 'EST': 'Estonia',
+            'SWZ': 'Eswatini', 'ETH': 'Ethiopia', 'FJI': 'Fiji', 'FIN': 'Finland',
+            'FRA': 'France', 'GAB': 'Gabon', 'GMB': 'Gambia', 'GEO': 'Georgia',
+            'DEU': 'Germany', 'GHA': 'Ghana', 'GRC': 'Greece', 'GTM': 'Guatemala',
+            'GIN': 'Guinea', 'GNB': 'Guinea-Bissau', 'GUY': 'Guyana', 'HTI': 'Haiti',
+            'HND': 'Honduras', 'HKG': 'Hong Kong', 'HUN': 'Hungary', 'ISL': 'Iceland',
+            'IND': 'India', 'IDN': 'Indonesia', 'IRN': 'Iran', 'IRQ': 'Iraq',
+            'IRL': 'Ireland', 'ISR': 'Israel', 'ITA': 'Italy', 'CIV': 'Ivory Coast',
+            'JAM': 'Jamaica', 'JPN': 'Japan', 'JOR': 'Jordan', 'KAZ': 'Kazakhstan',
+            'KEN': 'Kenya', 'PRK': 'Korea (North)', 'KOR': 'Korea (South)',
+            'KWT': 'Kuwait', 'KGZ': 'Kyrgyzstan', 'LAO': 'Laos', 'LVA': 'Latvia',
+            'LBN': 'Lebanon', 'LBY': 'Libya', 'LTU': 'Lithuania', 'LUX': 'Luxembourg',
+            'MAC': 'Macau', 'MDG': 'Madagascar', 'MYS': 'Malaysia', 'MDV': 'Maldives',
+            'MLI': 'Mali', 'MLT': 'Malta', 'MEX': 'Mexico', 'MDA': 'Moldova',
+            'MNG': 'Mongolia', 'MAR': 'Morocco', 'MOZ': 'Mozambique', 'MMR': 'Myanmar',
+            'NPL': 'Nepal', 'NLD': 'Netherlands', 'NZL': 'New Zealand',
+            'NIC': 'Nicaragua', 'NGA': 'Nigeria', 'NIR': 'Northern Ireland',
+            'NOR': 'Norway', 'OMN': 'Oman', 'PAK': 'Pakistan', 'PSE': 'Palestine',
+            'PAL': 'Palestine (Mandatory)', 'PAN': 'Panama', 'PRY': 'Paraguay',
+            'PER': 'Peru', 'PHL': 'Philippines', 'POL': 'Poland', 'PRT': 'Portugal',
+            'QAT': 'Qatar', 'ROU': 'Romania', 'RUS': 'Russia', 'SAU': 'Saudi Arabia',
+            'SRB': 'Serbia', 'SGP': 'Singapore', 'SVK': 'Slovakia', 'SVN': 'Slovenia',
+            'ZAF': 'South Africa', 'SUN': 'USSR (Soviet Union)', 'ESP': 'Spain',
+            'LKA': 'Sri Lanka', 'SDN': 'Sudan', 'SWE': 'Sweden', 'CHE': 'Switzerland',
+            'SYR': 'Syria', 'TWN': 'Taiwan', 'THA': 'Thailand', 'PRB': 'Transnistria',
+            'TUN': 'Tunisia', 'TUR': 'Turkey', 'UKR': 'Ukraine',
+            'ARE': 'United Arab Emirates', 'GBR': 'United Kingdom', 'USA': 'United States',
+            'URY': 'Uruguay', 'UZB': 'Uzbekistan', 'VAT': 'Vatican City',
+            'VEN': 'Venezuela', 'VNM': 'Vietnam', 'YEM': 'Yemen', 'YUG': 'Yugoslavia',
+            'ZWE': 'Zimbabwe', 'SLD': 'Somaliland', 'NKA': 'Nagorno-Karabakh',
+            'FRO': 'Faroe Islands', 'SCT': 'Scotland', 'JEY': 'Jersey',
+            'GGY': 'Guernsey', 'IMN': 'Isle of Man', 'GIB': 'Gibraltar',
+            'FLK': 'Falkland Islands', 'SHN': 'Saint Helena', 'ABW': 'Aruba',
+            'CUW': 'Curaçao', 'SXM': 'Sint Maarten', 'EUR': 'Eurozone',
+            'WAF': 'Western Africa', 'MKD': 'North Macedonia', 'OTT': 'Ottoman Empire',
+        };
+
+        // Historical entities mapped to the modern country whose territory
+        // now occupies (most of) that space. Folders with these codes get
+        // shown as a subsection under the modern country, e.g. USSR notes
+        // appear under Russia. Extend this table as you add more historical
+        // folders to your collection.
+        const HISTORICAL_TO_MODERN = {
+            'SUN': 'RUS',  // USSR -> Russia
+            'CSK': 'CZE',  // Czechoslovakia -> Czech Republic
+            'DDR': 'DEU',  // East Germany -> Germany
+            'YUG': 'SRB',  // Yugoslavia -> Serbia
+            'PAL': 'ISR',  // Mandatory Palestine -> Israel
+            'OTT': 'TUR',  // Ottoman Empire -> Turkey
+        };
+
+        // ============================================================
+        // Collection view: map + list + search + modal
+        // ============================================================
+        const OWNED_COLOR = '#22d3ee';
+        const NONE_COLOR = '#f43f5e';
+        const MUTED_COLOR = '#475569';
+
+        let cvCountries = [];       // raw [{code, images:[{id,name}]}] for the open collection
+        let cvCountryMap = {};      // merged: {code: {own:[images], historical:{histCode:[images]}}}
+        let collectionData = {};    // {code: {count, name}} - only countries with items
+        let countryLayers = {};
+        let COUNTRY_NAME_LOOKUP = {};
+        let activeCategoryFilter = null;
+        let leafletMap = null;
+
+        // Merges historical-entity folders (USSR, Ottoman Empire, etc.)
+        // into the modern country they map to, so they can be shown as a
+        // labeled subsection instead of appearing as their own map entry.
+        function buildCountryMap(countries) {
+            const map = {};
+            countries.forEach(c => {
+                const modern = HISTORICAL_TO_MODERN[c.code];
+                if (modern) {
+                    if (!map[modern]) map[modern] = { own: [], historical: {} };
+                    map[modern].historical[c.code] = c.images;
+                } else {
+                    if (!map[c.code]) map[c.code] = { own: [], historical: {} };
+                    map[c.code].own = map[c.code].own.concat(c.images);
+                }
+            });
+            return map;
+        }
+
+        function countryTotalCount(entry) {
+            return entry.own.length + Object.values(entry.historical).reduce((s, arr) => s + arr.length, 0);
+        }
+
+        async function showCollectionView(col, countries) {
+            currentCollectionId = col.id;
+            await loadLayouts();
+            cvCountries = countries;
+            cvCountryMap = buildCountryMap(countries);
+            collectionData = {};
+            Object.entries(cvCountryMap).forEach(([code, entry]) => {
+                const total = countryTotalCount(entry);
+                if (total > 0) {
+                    collectionData[code] = { count: total, name: COUNTRY_NAMES[code] || code };
+                }
+            });
+
+            document.getElementById('login-box').style.display = 'none';
+            document.getElementById('collection-view').style.display = 'flex';
+            document.getElementById('cv-title').textContent = col.name;
+
+            initCollectionViewUI();
+            await initMap();
+            renderList(); // after initMap, so COUNTRY_NAME_LOOKUP (all world countries) is populated
+        }
+
+        document.getElementById('back-btn').onclick = () => {
+            if (leafletMap) { leafletMap.remove(); leafletMap = null; }
+            countryLayers = {};
+            document.getElementById('collection-view').style.display = 'none';
+            document.getElementById('login-box').style.display = 'block';
+            contentEl.innerHTML = '<p>Loading your collections...</p>';
+            showCollectionsScreen();
+        };
+
+        // ---------- Manual categories / sort order (per collection, per
+        // country) - saved to Drive appData so it's the same on every
+        // device you sign in from. ----------
+        const LAYOUTS_FILENAME = 'layouts.json';
+        let layoutsCache = null; // {fileId, data: {collectionId: {countryCode: {categories:[{name,imageIds}]}}}}
+        let currentCollectionId = null;
+
+        async function loadLayouts() {
+            if (layoutsCache) return layoutsCache;
+            const listResp = await gapi.client.drive.files.list({
+                spaces: 'appDataFolder', q: `name='${LAYOUTS_FILENAME}'`, fields: 'files(id, name)'
+            });
+            const files = listResp.result.files;
+            if (files.length === 0) { layoutsCache = { fileId: null, data: {} }; return layoutsCache; }
+            const fileId = files[0].id;
+            const contentResp = await gapi.client.drive.files.get({ fileId, alt: 'media' });
+            layoutsCache = { fileId, data: JSON.parse(contentResp.body || '{}') };
+            return layoutsCache;
+        }
+
+        async function saveLayoutsToDrive() {
+            const content = JSON.stringify(layoutsCache.data);
+            const boundary = '-------314159265358979323846';
+            const metadata = { name: LAYOUTS_FILENAME, mimeType: 'application/json' };
+            if (!layoutsCache.fileId) metadata.parents = ['appDataFolder'];
+            const multipartBody =
+                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+            const path = layoutsCache.fileId
+                ? `/upload/drive/v3/files/${layoutsCache.fileId}?uploadType=multipart`
+                : `/upload/drive/v3/files?uploadType=multipart`;
+            const resp = await gapi.client.request({
+                path, method: layoutsCache.fileId ? 'PATCH' : 'POST',
+                headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+                body: multipartBody
+            });
+            layoutsCache.fileId = resp.result.id;
+        }
+
+        function getCountryLayout(code) {
+            if (!layoutsCache.data[currentCollectionId]) layoutsCache.data[currentCollectionId] = {};
+            if (!layoutsCache.data[currentCollectionId][code]) {
+                layoutsCache.data[currentCollectionId][code] = { categories: [], uncategorizedOrder: [] };
+            }
+            if (!layoutsCache.data[currentCollectionId][code].uncategorizedOrder) {
+                layoutsCache.data[currentCollectionId][code].uncategorizedOrder = [];
+            }
+            return layoutsCache.data[currentCollectionId][code];
+        }
+
+        // ---------- Modal ----------
+        const modal = document.getElementById('modal');
+        const modalBackdrop = document.getElementById('modal-backdrop');
+        const modalTitle = document.getElementById('modal-title');
+        const modalImages = document.getElementById('modal-images');
+
+        let currentModalCode = null;
+        let selectedForShare = new Set();
+        let shareSelectMode = false;
+        let organizeMode = false;
+        let draftCategories = [];
+
+        const HEADING_STYLE = 'color:var(--text-dim);font-size:14px;font-weight:normal;margin:16px 0 8px 0;text-align:center;border-top:1px solid var(--border);padding-top:12px;';
+
+        function updateHeaderIcons() {
+            const showShareIcon = !shareSelectMode && !organizeMode;
+            const showOrganizeIcon = !shareSelectMode && !organizeMode;
+            document.getElementById('share-icon-btn').style.display = showShareIcon ? 'flex' : 'none';
+            document.getElementById('share-confirm-icon-btn').style.display = shareSelectMode ? 'flex' : 'none';
+            document.getElementById('share-cancel-icon-btn').style.display = shareSelectMode ? 'flex' : 'none';
+            document.getElementById('organize-icon-btn').style.display = showOrganizeIcon ? 'flex' : 'none';
+            document.getElementById('organize-confirm-icon-btn').style.display = organizeMode ? 'flex' : 'none';
+            document.getElementById('organize-cancel-icon-btn').style.display = organizeMode ? 'flex' : 'none';
+            document.querySelectorAll('.share-checkbox').forEach(cb => { cb.style.display = shareSelectMode ? 'block' : 'none'; });
+        }
+
+        function setShareSelectMode(on) {
+            shareSelectMode = on;
+            updateHeaderIcons();
+        }
+
+        document.getElementById('share-icon-btn').onclick = () => setShareSelectMode(true);
+        document.getElementById('share-cancel-icon-btn').onclick = () => setShareSelectMode(false);
+
+        document.getElementById('organize-icon-btn').onclick = () => {
+            draftCategories = JSON.parse(JSON.stringify(getCountryLayout(currentModalCode).categories));
+            draftUncategorizedOrder = JSON.parse(JSON.stringify(getCountryLayout(currentModalCode).uncategorizedOrder));
+            editingCategoryIndex = null;
+            organizeMode = true;
+            updateHeaderIcons();
+            renderModalContent(currentModalCode);
+        };
+        document.getElementById('organize-cancel-icon-btn').onclick = () => {
+            organizeMode = false;
+            editingCategoryIndex = null;
+            updateHeaderIcons();
+            renderModalContent(currentModalCode);
+        };
+        document.getElementById('organize-confirm-icon-btn').onclick = async () => {
+            getCountryLayout(currentModalCode).categories = draftCategories;
+            getCountryLayout(currentModalCode).uncategorizedOrder = draftUncategorizedOrder;
+            await saveLayoutsToDrive();
+            organizeMode = false;
+            editingCategoryIndex = null;
+            updateHeaderIcons();
+            renderModalContent(currentModalCode);
+        };
+
+        // Renders a row of thumbnails (used in normal view mode)
+        function renderImageGroup(images) {
+            const grid = document.createElement('div');
+            const cols = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(images.length))));
+            grid.style.cssText = `display:grid;grid-template-columns:repeat(${cols}, 130px);gap:10px;justify-content:center;`;
+
+            images.forEach(img => {
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'position:relative;';
+
+                const el = document.createElement('img');
+                el.onclick = () => { if (!shareSelectMode) showEnlarged(img.id); };
+                wrapper.appendChild(el);
+                getThumbnailBlobUrl(img.id)
+                    .then(url => { el.src = url; })
+                    .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); });
+
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = true;
+                checkbox.className = 'share-checkbox';
+                checkbox.title = 'Include in share';
+                checkbox.onclick = (e) => e.stopPropagation();
+                checkbox.onchange = () => {
+                    if (checkbox.checked) selectedForShare.add(img.id);
+                    else selectedForShare.delete(img.id);
+                };
+                wrapper.appendChild(checkbox);
+
+                grid.appendChild(wrapper);
+            });
+            return grid;
+        }
+
+        let editingCategoryIndex = null; // which category's name is currently being edited
+        let draftUncategorizedOrder = []; // explicit manual order for Uncategorized, like a category's imageIds
+
+        // Returns the array that currently "owns" an image's order:
+        // draftUncategorizedOrder for -1, or that category's imageIds.
+        function orderArrayFor(categoryIndex) {
+            return categoryIndex === -1 ? draftUncategorizedOrder : draftCategories[categoryIndex].imageIds;
+        }
+
+        // Moves an image up/down between categories (or to/from
+        // Uncategorized). Creates a new category automatically if you
+        // move past the first or last one.
+        function moveImageDirection(img, currentCatIndex, direction) {
+            const currentArr = orderArrayFor(currentCatIndex);
+            const idx = currentArr.indexOf(img.id);
+            if (idx !== -1) currentArr.splice(idx, 1);
+
+            let targetIndex = currentCatIndex + direction;
+            if (direction === -1 && targetIndex < -1) {
+                draftCategories.unshift({ name: 'New category', imageIds: [] });
+                targetIndex = 0;
+            } else if (direction === 1 && targetIndex >= draftCategories.length) {
+                draftCategories.push({ name: 'New category', imageIds: [] });
+                targetIndex = draftCategories.length - 1;
+            }
+            orderArrayFor(targetIndex).push(img.id);
+            renderModalContent(currentModalCode);
+        }
+
+        function reorderWithin(categoryIndex, pos, direction) {
+            const arr = orderArrayFor(categoryIndex);
+            const newPos = pos + direction;
+            if (newPos < 0 || newPos >= arr.length) return;
+            [arr[pos], arr[newPos]] = [arr[newPos], arr[pos]];
+            renderModalContent(currentModalCode);
+        }
+
+        // Merges an explicit manual order with any images that don't
+        // appear in it yet (new/unordered ones get appended at the end).
+        function applyOrder(orderIds, images) {
+            const ordered = orderIds.map(id => images.find(i => i.id === id)).filter(Boolean);
+            const missing = images.filter(img => !orderIds.includes(img.id));
+            return ordered.concat(missing);
+        }
+
+        // Renders the editable "organize" UI: new-category input, an
+        // Uncategorized bucket, and each category with rename/reorder/
+        // delete controls plus per-image move controls.
+        function renderOrganizeSection(uncategorizedRaw, allOwnImages) {
+            const container = modalImages;
+            const uncategorized = applyOrder(draftUncategorizedOrder, uncategorizedRaw);
+            // Keep draftUncategorizedOrder as a COMPLETE, position-matched
+            // list (not just the items someone has manually moved) - this
+            // is what makes the left/right reorder buttons actually work
+            // on it, the same way a real category's imageIds array does.
+            draftUncategorizedOrder = uncategorized.map(img => img.id);
+
+            // (Categories are created automatically via the ▲/▼ buttons
+            // on a photo, so there's no separate "add category" control.)
+
+            // Builds a compact directional pad: ▲ on top, ◀ ▶ in the
+            // middle row, ▼ on the bottom - arranged like a plus sign.
+            function buildDpad(categoryIndex, posInCategory, categoryLength) {
+                const grid = document.createElement('div');
+                grid.style.cssText = 'display:grid;grid-template-columns:22px 22px 22px;grid-template-rows:20px 20px 20px;gap:2px;justify-content:center;margin:4px auto 0 auto;width:fit-content;';
+
+                function mk(txt, row, col, disabled, onClick, title) {
+                    const b = document.createElement('button');
+                    b.textContent = txt;
+                    b.disabled = disabled;
+                    b.title = title;
+                    b.style.cssText = `grid-row:${row};grid-column:${col};font-size:10px;padding:0;line-height:1;background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer;${disabled ? 'opacity:0.3;' : ''}`;
+                    b.onclick = onClick;
+                    return b;
+                }
+
+                grid.appendChild(mk('▲', 1, 2, false, null, 'Move to previous category'));
+                grid.appendChild(mk('◀', 2, 1, posInCategory === 0, null, 'Move earlier'));
+                grid.appendChild(mk('▶', 2, 3, posInCategory === categoryLength - 1, null, 'Move later'));
+                grid.appendChild(mk('▼', 3, 2, false, null, 'Move to next category'));
+
+                // Wire callbacks after creation (need the actual image ref)
+                return grid;
+            }
+
+            function imageCell(img, categoryIndex, posInCategory, categoryLength) {
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'display:inline-block;width:110px;margin:4px;vertical-align:top;text-align:center;';
+
+                const el = document.createElement('img');
+                el.style.cssText = 'width:90px;height:90px;object-fit:contain;background:rgba(255,255,255,0.06);border-radius:6px;border:1px solid var(--border);padding:2px;';
+                wrapper.appendChild(el);
+                getThumbnailBlobUrl(img.id)
+                    .then(url => { el.src = url; })
+                    .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); el.alt = '⚠'; });
+
+                const dpad = buildDpad(categoryIndex, posInCategory, categoryLength);
+                const buttons = dpad.querySelectorAll('button');
+                buttons[0].onclick = () => moveImageDirection(img, categoryIndex, -1); // ▲
+                buttons[1].onclick = () => reorderWithin(categoryIndex, posInCategory, -1); // ◀
+                buttons[2].onclick = () => reorderWithin(categoryIndex, posInCategory, 1);  // ▶
+                buttons[3].onclick = () => moveImageDirection(img, categoryIndex, 1);  // ▼
+                wrapper.appendChild(dpad);
+
+                return wrapper;
+            }
+
+            // Uncategorized bucket - only labeled once categories exist
+            const uncatWrap = document.createElement('div');
+            uncatWrap.style.cssText = 'text-align:center;';
+            if (draftCategories.length > 0) {
+                const uncatHeading = document.createElement('h3');
+                uncatHeading.textContent = 'Uncategorized';
+                uncatHeading.style.cssText = HEADING_STYLE;
+                container.appendChild(uncatHeading);
+            }
+            uncategorized.forEach((img, pos) => uncatWrap.appendChild(imageCell(img, -1, pos, uncategorized.length)));
+            if (uncategorized.length === 0 && draftCategories.length > 0) {
+                const empty = document.createElement('p');
+                empty.textContent = '(none)'; empty.style.cssText = 'color:var(--text-dim);font-size:12px;';
+                uncatWrap.appendChild(empty);
+            }
+            container.appendChild(uncatWrap);
+
+            draftCategories.forEach((cat, catIdx) => {
+                const header = document.createElement('div');
+                header.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 0 6px 0;border-top:1px solid var(--border);padding-top:12px;';
+
+                const nameContainer = document.createElement('div');
+                nameContainer.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;min-width:140px;';
+
+                if (editingCategoryIndex === catIdx) {
+                    const nameInput = document.createElement('input');
+                    nameInput.type = 'text'; nameInput.value = cat.name;
+                    nameInput.style.cssText = 'flex:1;min-width:120px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel-alt);color:var(--text);font-size:14px;';
+                    nameInput.oninput = () => { cat.name = nameInput.value; };
+                    nameInput.onkeydown = (e) => { if (e.key === 'Enter') { editingCategoryIndex = null; renderModalContent(currentModalCode); } };
+                    nameContainer.appendChild(nameInput);
+
+                    const saveBtn = document.createElement('button');
+                    saveBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>';
+                    saveBtn.title = 'Save name';
+                    saveBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--accent-owned);cursor:pointer;padding:2px;display:flex;';
+                    saveBtn.onclick = () => { editingCategoryIndex = null; renderModalContent(currentModalCode); };
+                    nameContainer.appendChild(saveBtn);
+                } else {
+                    const nameLabel = document.createElement('span');
+                    nameLabel.textContent = cat.name && cat.name.trim() ? cat.name : 'Untitled category';
+                    nameLabel.style.cssText = 'flex:1;min-width:60px;font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                    nameContainer.appendChild(nameLabel);
+
+                    const editBtn = document.createElement('button');
+                    editBtn.innerHTML = '&#9998;';
+                    editBtn.title = 'Rename';
+                    editBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:2px;';
+                    editBtn.onclick = () => { editingCategoryIndex = catIdx; renderModalContent(currentModalCode); };
+                    nameContainer.appendChild(editBtn);
+                }
+                header.appendChild(nameContainer);
+
+                const delBtn = document.createElement('button');
+                delBtn.innerHTML = '&#128465;';
+                delBtn.title = 'Delete category (images become uncategorized)';
+                delBtn.style.cssText = 'flex-shrink:0;width:26px;height:26px;padding:0;background:transparent;border:1px solid var(--border);color:var(--accent-none);border-radius:4px;cursor:pointer;';
+                delBtn.onclick = () => {
+                    // images in this category go back to being uncategorized
+                    draftUncategorizedOrder = draftUncategorizedOrder.concat(cat.imageIds);
+                    draftCategories.splice(catIdx, 1);
+                    if (editingCategoryIndex === catIdx) editingCategoryIndex = null;
+                    renderModalContent(currentModalCode);
+                };
+                header.appendChild(delBtn);
+
+                container.appendChild(header);
+
+                const catWrap = document.createElement('div');
+                catWrap.style.cssText = 'text-align:center;';
+                const imgs = cat.imageIds.map(id => allOwnImages.find(i => i.id === id)).filter(Boolean);
+                imgs.forEach((img, pos) => catWrap.appendChild(imageCell(img, catIdx, pos, imgs.length)));
+                if (imgs.length === 0) {
+                    const empty = document.createElement('p');
+                    empty.textContent = '(empty - use ▲ on a photo above to move it here)';
+                    empty.style.cssText = 'color:var(--text-dim);font-size:12px;';
+                    catWrap.appendChild(empty);
+                }
+                container.appendChild(catWrap);
+            });
+        }
+
+        // Renders whichever mode is currently active (normal view, or the
+        // organize editor) for the given country code.
+        function renderModalContent(code) {
+            const entry = cvCountryMap[code];
+            if (!entry) return;
+            modalTitle.textContent = COUNTRY_NAMES[code] || code;
+            modalImages.innerHTML = '';
+
+            const categories = organizeMode ? draftCategories : getCountryLayout(code).categories;
+            const categorizedIds = new Set(categories.flatMap(c => c.imageIds));
+            const uncategorizedRaw = entry.own.filter(img => !categorizedIds.has(img.id));
+            const uncategorized = organizeMode ? uncategorizedRaw : applyOrder(getCountryLayout(code).uncategorizedOrder, uncategorizedRaw);
+
+            if (organizeMode) {
+                renderOrganizeSection(uncategorized, entry.own);
+                return; // historical entries aren't editable in this pass
+            }
+
+            if (uncategorized.length > 0) {
+                if (categories.length > 0) {
+                    const heading = document.createElement('h3');
+                    heading.textContent = 'Uncategorized';
+                    heading.style.cssText = HEADING_STYLE;
+                    modalImages.appendChild(heading);
+                }
+                modalImages.appendChild(renderImageGroup(uncategorized));
+            }
+
+            categories.forEach(cat => {
+                const imgs = cat.imageIds.map(id => entry.own.find(i => i.id === id)).filter(Boolean);
+                if (imgs.length === 0) return;
+                const heading = document.createElement('h3');
+                heading.textContent = cat.name;
+                heading.style.cssText = HEADING_STYLE;
+                modalImages.appendChild(heading);
+                modalImages.appendChild(renderImageGroup(imgs));
+            });
+
+            Object.entries(entry.historical).forEach(([histCode, images]) => {
+                if (images.length === 0) return;
+                const heading = document.createElement('h3');
+                heading.textContent = COUNTRY_NAMES[histCode] || histCode;
+                heading.style.cssText = HEADING_STYLE;
+                modalImages.appendChild(heading);
+                modalImages.appendChild(renderImageGroup(images));
+            });
+        }
+
+        async function openModal(code) {
+            const entry = cvCountryMap[code];
+            if (!entry) return;
+            currentModalCode = code;
+            organizeMode = false;
+
+            const allImages = entry.own.concat(...Object.values(entry.historical));
+            selectedForShare = new Set(allImages.map(img => img.id));
+            shareSelectMode = false;
+            updateHeaderIcons();
+
+            renderModalContent(code);
+
+            modal.style.display = 'block';
+            modalBackdrop.style.display = 'block';
+            document.getElementById('cv-main').classList.add('dimmed');
+        }
+
+        function closeModal() {
+            modal.style.display = 'none';
+            modalBackdrop.style.display = 'none';
+            document.getElementById('cv-main').classList.remove('dimmed');
+        }
+        modalBackdrop.onclick = closeModal;
+
+        // ---------- Share: builds one self-contained HTML file with all
+        // of a country's images embedded directly (base64) - no Drive
+        // access, no sign-in, and no waiting needed for whoever opens it ----------
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // Resizes an image blob down by a factor (e.g. 4 = quarter the
+        // width and height) - used to shrink shared files significantly.
+        function resizeImageBlobByFactor(blob, factor) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                const objUrl = URL.createObjectURL(blob);
+                img.onload = () => {
+                    const width = Math.max(1, Math.round(img.width / factor));
+                    const height = Math.max(1, Math.round(img.height / factor));
+                    const canvas = document.createElement('canvas');
+                    canvas.width = width; canvas.height = height;
+                    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                    canvas.toBlob(resolve, 'image/jpeg', 0.8);
+                    URL.revokeObjectURL(objUrl);
+                };
+                img.onerror = () => {
+                    reject(new Error(`Could not decode image (blob type="${blob.type}", size=${blob.size} bytes)`));
+                };
+                img.src = objUrl;
+            });
+        }
+
+        // Uses the device's native share sheet (Android, and some desktop
+        // browsers) when available; otherwise falls back to a normal file
+        // download, which works everywhere.
+        async function shareOrDownloadFile(blob, filename) {
+            const file = new File([blob], filename, { type: 'text/html' });
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                try {
+                    await navigator.share({ files: [file], title: filename });
+                    return;
+                } catch (err) {
+                    if (err.name === 'AbortError') return; // user cancelled the share sheet
+                    // otherwise fall through to download as a backup
+                }
+            }
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+        }
+
+        document.getElementById('share-confirm-icon-btn').onclick = async () => {
+            const code = currentModalCode;
+            const entry = cvCountryMap[code];
+            if (!entry) return;
+
+            // Build the same ordered groups shown in the modal (Uncategorized
+            // first, then saved categories in order, then historical entities)
+            const layout = getCountryLayout(code);
+            const categorizedIds = new Set(layout.categories.flatMap(c => c.imageIds));
+            const uncategorizedRaw = entry.own.filter(img => !categorizedIds.has(img.id));
+            const uncategorized = applyOrder(layout.uncategorizedOrder, uncategorizedRaw);
+
+            const orderedGroups = [];
+            if (uncategorized.length > 0) {
+                orderedGroups.push({ heading: layout.categories.length > 0 ? 'Uncategorized' : null, images: uncategorized });
+            }
+            layout.categories.forEach(cat => {
+                const imgs = cat.imageIds.map(id => entry.own.find(i => i.id === id)).filter(Boolean);
+                if (imgs.length > 0) orderedGroups.push({ heading: cat.name, images: imgs });
+            });
+            Object.entries(entry.historical).forEach(([histCode, images]) => {
+                if (images.length > 0) orderedGroups.push({ heading: COUNTRY_NAMES[histCode] || histCode, images });
+            });
+
+            const allImages = orderedGroups.flatMap(g => g.images);
+            const selectedImages = allImages.filter(img => selectedForShare.has(img.id));
+            if (selectedImages.length === 0) {
+                alert('Select at least one image to share (checkbox on each photo).');
+                return;
+            }
+
+            const btn = document.getElementById('share-confirm-icon-btn');
+            btn.style.opacity = '0.4';
+            btn.style.pointerEvents = 'none';
+
+            let bodyHtml = '';
+            for (const group of orderedGroups) {
+                const groupSelected = group.images.filter(img => selectedForShare.has(img.id));
+                if (groupSelected.length === 0) continue;
+                if (group.heading) bodyHtml += `<h3>${group.heading}</h3>`;
+                bodyHtml += '<div class="grid">';
+                for (const img of groupSelected) {
+                    const fullBlob = await fetchFullImageBlob(img.id);
+                    const smallBlob = await resizeImageBlobByFactor(fullBlob, 4); // 1/4 resolution
+                    const dataUrl = await blobToBase64(smallBlob);
+                    bodyHtml += `<img src="${dataUrl}">`;
+                }
+                bodyHtml += '</div>';
+            }
+
+            const countryName = COUNTRY_NAMES[code] || code;
+            const html = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${countryName} - Banknotes & Coins</title>
+<style>
+body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;text-align:center;}
+h1{color:#22d3ee;}
+h3{color:#94a3b8;font-weight:normal;border-top:1px solid rgba(255,255,255,0.15);padding-top:12px;margin-top:20px;}
+.grid{display:flex;flex-wrap:wrap;gap:12px;justify-content:center;}
+img{max-width:280px;max-height:280px;border-radius:6px;border:1px solid rgba(255,255,255,0.25);
+    background:rgba(255,255,255,0.06);padding:4px;box-sizing:border-box;}
+</style></head>
+<body>
+<h1>${countryName}</h1>
+${bodyHtml}
+</body></html>`;
+
+            const fileBlob = new Blob([html], { type: 'text/html' });
+            await shareOrDownloadFile(fileBlob, `${countryName.replace(/\s+/g, '_')}.html`);
+
+            btn.style.opacity = '1';
+            btn.style.pointerEvents = 'auto';
+            setShareSelectMode(false);
+        };
+
+        function showEnlarged(fileId) {
+            const overlay = document.getElementById('enlarge-overlay');
+            const img = document.getElementById('enlarge-img');
+            overlay.style.display = 'block';
+            getFullImageBlobUrl(fileId).then(url => { img.src = url; });
+        }
+        document.getElementById('enlarge-overlay').onclick = function() { this.style.display = 'none'; };
+
+        // ---------- List view ----------
+        function renderList() {
+            const listDiv = document.getElementById('list-view');
+            listDiv.innerHTML = '';
+
+            // Show every country in the world, not just owned ones, so the
+            // "None yet" filter has something to display - owned countries
+            // sort to the top, everything else follows alphabetically.
+            const entries = Object.keys(COUNTRY_NAME_LOOKUP).map(code => ({
+                code,
+                name: COUNTRY_NAME_LOOKUP[code],
+                owned: collectionData.hasOwnProperty(code),
+                count: collectionData[code] ? collectionData[code].count : 0
+            }));
+            entries.sort((a, b) => {
+                if (a.owned !== b.owned) return a.owned ? -1 : 1;
+                return a.name.localeCompare(b.name);
+            });
+
+            entries.forEach(entry => {
+                const item = document.createElement('div');
+                item.className = 'country-item';
+                item.dataset.code = entry.code;
+                item.dataset.name = entry.name.toLowerCase();
+                if (!entry.owned) item.style.opacity = '0.5';
+                item.innerHTML = `<span>${entry.name}</span><span class="count">${entry.owned ? entry.count : ''}</span>`;
+                if (entry.owned) item.onclick = () => openModal(entry.code);
+                listDiv.appendChild(item);
+            });
+        }
+
+        // ---------- View toggle, search, filters (unified logic) ----------
+        function initCollectionViewUI() {
+            const btnMap = document.getElementById('btn-map');
+            const btnList = document.getElementById('btn-list');
+            const listDiv = document.getElementById('list-view');
+
+            btnMap.onclick = () => {
+                btnMap.classList.add('active'); btnList.classList.remove('active');
+                listDiv.style.display = 'none';
+                document.getElementById('map-only-controls').style.display = 'block';
+                const zc = document.querySelector('.leaflet-control-zoom');
+                if (zc) zc.style.display = 'block';
+            };
+            btnList.onclick = () => {
+                btnList.classList.add('active'); btnMap.classList.remove('active');
+                listDiv.style.display = 'block';
+                document.getElementById('map-only-controls').style.display = 'none';
+                const zc = document.querySelector('.leaflet-control-zoom');
+                if (zc) zc.style.display = 'none';
+            };
+
+            const searchBox = document.getElementById('search-box');
+            const searchGhost = document.getElementById('search-ghost');
+            searchBox.value = '';
+            searchGhost.value = '';
+
+            function matchesQuery(code, name, query) {
+                return name.toLowerCase().includes(query) || code.toLowerCase().includes(query);
+            }
+            function updateGhostSuggestion() {
+                const typed = searchBox.value;
+                if (typed === '') { searchGhost.value = ''; return; }
+                const typedLower = typed.toLowerCase();
+                const allNames = Object.values(COUNTRY_NAME_LOOKUP);
+                const suggestion = allNames.find(n => n.toLowerCase().startsWith(typedLower));
+                searchGhost.value = suggestion ? typed + suggestion.slice(typed.length) : '';
+            }
+            function passesFilters(code, name) {
+                const query = searchBox.value.trim().toLowerCase();
+                const searchOk = query === '' || matchesQuery(code, name, query);
+                const isOwned = collectionData.hasOwnProperty(code);
+                let categoryOk = true;
+                if (activeCategoryFilter === 'owned') categoryOk = isOwned;
+                if (activeCategoryFilter === 'none') categoryOk = !isOwned;
+                return searchOk && categoryOk;
+            }
+            window._passesFilters = passesFilters; // used by map hover handlers below
+
+            function applyFilters() {
+                const matched = [];
+                Object.entries(countryLayers).forEach(([code, layers]) => {
+                    const name = COUNTRY_NAME_LOOKUP[code] || code;
+                    const isOwned = collectionData.hasOwnProperty(code);
+                    const show = passesFilters(code, name);
+                    layers.forEach(layer => {
+                        layer.setStyle(show
+                            ? { fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
+                            : { fillColor: MUTED_COLOR, fillOpacity: 0.18 });
+                    });
+                    if (show) matched.push(code);
+                });
+                document.querySelectorAll('.country-item').forEach(item => {
+                    item.style.display = passesFilters(item.dataset.code, item.dataset.name) ? 'flex' : 'none';
+                });
+                return matched;
+            }
+            window._applyFilters = applyFilters;
+
+            function focusOnMatches(matched) {
+                if (matched.length === 0 || !leafletMap) return;
+                const allLayers = matched.flatMap(c => countryLayers[c]);
+                if (allLayers.length === 1) {
+                    leafletMap.fitBounds(allLayers[0].getBounds(), { maxZoom: 7, padding: [40, 40] });
+                } else {
+                    leafletMap.fitBounds(L.featureGroup(allLayers).getBounds(), { maxZoom: 6, padding: [40, 40] });
+                }
+            }
+
+            searchBox.oninput = () => {
+                updateGhostSuggestion();
+                const matched = applyFilters();
+                if (searchBox.value.trim() !== '' && matched.length === 1) focusOnMatches(matched);
+            };
+            searchBox.onkeydown = (e) => {
+                if ((e.key === 'Tab' || e.key === 'ArrowRight') && searchGhost.value && searchBox.selectionStart === searchBox.value.length) {
+                    e.preventDefault();
+                    searchBox.value = searchGhost.value;
+                    searchGhost.value = '';
+                    focusOnMatches(applyFilters());
+                } else if (e.key === 'Enter') {
+                    focusOnMatches(applyFilters());
+                }
+            };
+
+            function toggleCategoryFilter(name) {
+                activeCategoryFilter = (activeCategoryFilter === name) ? null : name;
+                document.getElementById('filter-owned').classList.toggle('active', activeCategoryFilter === 'owned');
+                document.getElementById('filter-none').classList.toggle('active', activeCategoryFilter === 'none');
+                applyFilters();
+            }
+            document.getElementById('filter-owned').onclick = () => toggleCategoryFilter('owned');
+            document.getElementById('filter-none').onclick = () => toggleCategoryFilter('none');
+
+            document.getElementById('reset-btn').onclick = () => {
+                searchBox.value = ''; searchGhost.value = '';
+                activeCategoryFilter = null;
+                document.getElementById('filter-owned').classList.remove('active');
+                document.getElementById('filter-none').classList.remove('active');
+                applyFilters();
+                if (leafletMap) leafletMap.setView([20, 10], 2);
+            };
+        }
+
+        // ---------- Map ----------
+        async function initMap() {
+            countryLayers = {};
+            COUNTRY_NAME_LOOKUP = {};
+
+            leafletMap = L.map('map', {
+                preferCanvas: true,
+                worldCopyJump: false,
+                maxBounds: [[-90, -180], [90, 180]],
+                maxBoundsViscosity: 1.0,
+                minZoom: 2
+            }).setView([20, 10], 2);
+
+            const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
+
+            const NAME_TO_CODE_OVERRIDE = { 'France': 'FRA', 'Norway': 'NOR', 'Somaliland': 'SLD' };
+            function getCodeForFeature(feature) {
+                const rawCode = feature.properties['ISO3166-1-Alpha-3'];
+                const name = feature.properties['name'];
+                return (rawCode && rawCode !== '-99') ? rawCode : (NAME_TO_CODE_OVERRIDE[name] || rawCode);
+            }
+            function bboxArea(geometry) {
+                let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+                (function walk(coords) {
+                    if (typeof coords[0] === 'number') {
+                        const [lng, lat] = coords;
+                        if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+                        if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
+                    } else { coords.forEach(walk); }
+                })(geometry.coordinates);
+                return (maxLat - minLat) * (maxLng - minLng);
+            }
+            const MIN_VISIBLE_AREA = 0.3;
+            function featureFilter(feature) {
+                const code = getCodeForFeature(feature);
+                if (collectionData.hasOwnProperty(code)) return true;
+                return bboxArea(feature.geometry) >= MIN_VISIBLE_AREA;
+            }
+            function onEachCountry(feature, layer) {
+                const code = getCodeForFeature(feature);
+                const name = feature.properties['name'];
+                const info = collectionData[code];
+                const isFirstShapeForCode = !countryLayers[code];
+                if (!countryLayers[code]) countryLayers[code] = [];
+                countryLayers[code].push(layer);
+                COUNTRY_NAME_LOOKUP[code] = name;
+
+                if (info) {
+                    if (isFirstShapeForCode) {
+                        layer.bindTooltip(name, { permanent: true, direction: 'center', className: 'country-label' });
+                    }
+                    layer.on('click', () => openModal(code));
+                    layer.on('mouseover', function() { if (window._passesFilters(code, name)) this.setStyle({ fillOpacity: 0.9 }); });
+                    layer.on('mouseout', function() { if (window._passesFilters(code, name)) this.setStyle({ fillOpacity: 0.65 }); });
+                } else {
+                    layer.bindTooltip(name);
+                }
+            }
+
+            L.geoJSON(geoData, {
+                filter: featureFilter,
+                style: { weight: 0.6, color: 'rgba(226,232,240,0.35)', fillColor: MUTED_COLOR, fillOpacity: 0.1 },
+                onEachFeature: onEachCountry
+            }).addTo(leafletMap);
+
+            const codes = Object.keys(countryLayers);
+            for (let i = codes.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [codes[i], codes[j]] = [codes[j], codes[i]];
+            }
+            codes.forEach((code, i) => {
+                setTimeout(() => {
+                    const isOwned = collectionData.hasOwnProperty(code);
+                    countryLayers[code].forEach(layer => {
+                        layer.setStyle({ fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 });
+                    });
+                }, i * 20);
+            });
+        }
+
+        // ---------- Step 7: opening a collection ----------
+        // Fetches every country folder AND the images inside each one,
+        // directly from the browser - no server involved at all.
+        async function fetchCollectionData(rootFolderId) {
+            const foldersResp = await gapi.client.drive.files.list({
+                q: `'${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+                fields: 'files(id, name)',
+                pageSize: 1000
+            });
+            const folders = foldersResp.result.files;
+
+            const countries = [];
+            for (const folder of folders) {
+                const imagesResp = await gapi.client.drive.files.list({
+                    q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed=false`,
+                    fields: 'files(id, name)',
+                    pageSize: 1000
+                });
+                countries.push({ code: folder.name, images: imagesResp.result.files });
+            }
+            return countries;
+        }
+
+        async function openCollection(col) {
+            contentEl.innerHTML = `<p>Opening "${col.name}"...</p>`;
+            setStatus('Reading folders and images...');
+
+            try {
+                const countries = await fetchCollectionData(col.id);
+                setStatus('');
+                await showCollectionView(col, countries);
+            } catch (err) {
+                console.error(err);
+                contentEl.innerHTML = `<p style="color:#f43f5e;">Error: ${err.message || JSON.stringify(err)}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>
