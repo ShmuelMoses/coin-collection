@@ -209,7 +209,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.4</div>
+        <div class="app-version">v0.5</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -238,7 +238,7 @@
                 <button id="reset-btn">&#8634; Reset view</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.4</div>
+            <div id="app-version">v0.5</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
@@ -1521,9 +1521,11 @@ ${bodyHtml}
             return (maxLat - minLat) * (maxLng - minLng);
         }
         const MIN_VISIBLE_AREA = 0.3;
+        const ALWAYS_VISIBLE_CODES = new Set(['PSE']); // exempted from the small-territory filter below
         function featureFilter(feature) {
             const code = getCodeForFeature(feature);
             if (collectionData.hasOwnProperty(code)) return true;
+            if (ALWAYS_VISIBLE_CODES.has(code)) return true;
             return bboxArea(feature.geometry) >= MIN_VISIBLE_AREA;
         }
 
@@ -1540,6 +1542,18 @@ ${bodyHtml}
             const geoData = await fetch('countries.geojson').then(r => r.json());
             cachedGeoFeatures = geoData.features.filter(featureFilter);
             return cachedGeoFeatures;
+        }
+
+        // The globe loads its OWN, much more aggressively simplified file -
+        // three-globe's 3D mesh building is far slower per-point than
+        // Leaflet's 2D rendering, and a whole-sphere view doesn't need
+        // nearly as much coastline detail as the close-up 2D map does.
+        let cachedGlobeFeatures = null;
+        async function getGlobeFeatures() {
+            if (cachedGlobeFeatures) return cachedGlobeFeatures;
+            const geoData = await fetch('countries_globe.geojson').then(r => r.json());
+            cachedGlobeFeatures = geoData.features.filter(featureFilter);
+            return cachedGlobeFeatures;
         }
 
         async function initMap() {
@@ -1605,7 +1619,9 @@ ${bodyHtml}
                 return;
             }
 
-            const features = await getGeoFeatures();
+            // Already a completely separate fetch/array from the 2D map's -
+            // no cloning needed, they never share memory.
+            const features = await getGlobeFeatures();
 
             globeInstance = Globe()(globeDiv)
                 .width(globeDiv.clientWidth)
