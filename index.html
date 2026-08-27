@@ -80,6 +80,8 @@
             width: 100%; background: transparent; border: 1px solid var(--border); color: var(--text-dim);
             padding: 7px 10px; border-radius: 6px; cursor: pointer; font-size: 13px; margin-top: 24px;
         }
+        #app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 8px; }
+        .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
         #cv-title { font-size: 16px; margin: 0 0 16px 0; color: var(--accent-owned); }
 
         /* Phones: sidebar becomes a compact bar across the TOP instead of
@@ -203,6 +205,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
+        <div class="app-version">v0.1</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -231,6 +234,7 @@
                 <button id="reset-btn">&#8634; Reset view</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
+            <div id="app-version">v0.1</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
@@ -1572,14 +1576,37 @@ ${bodyHtml}
             return cachedGeoFeatures;
         }
 
-        // The globe uses its OWN copy, without our custom point-reduction -
-        // three-globe's mesh triangulation is far less forgiving of
-        // imperfect polygons than Leaflet is, and the simplified shapes
-        // were corrupting the 3D render (whole-sphere color bleed).
+        // The globe uses its OWN copy of the data with a DIFFERENT, gentler
+        // point-reduction than the 2D map: taking every Nth coordinate
+        // ("decimation") instead of the smarter but riskier algorithm used
+        // for Leaflet. It always keeps a valid, still-closed shape, which
+        // matters a lot more for three-globe's 3D mesh building than it did
+        // for Leaflet - and it's cheap enough to avoid freezing the page.
+        function decimateRing(ring, keepEvery) {
+            if (ring.length <= 24) return ring; // small shapes: leave alone
+            const result = [];
+            for (let i = 0; i < ring.length; i += keepEvery) result.push(ring[i]);
+            const first = ring[0], last = result[result.length - 1];
+            if (last[0] !== first[0] || last[1] !== first[1]) result.push(first); // keep the ring closed
+            return result.length >= 4 ? result : ring;
+        }
+        function decimateGeoData(geoData, keepEvery) {
+            geoData.features.forEach(f => {
+                const g = f.geometry;
+                if (!g) return;
+                if (g.type === 'Polygon') {
+                    g.coordinates = g.coordinates.map(r => decimateRing(r, keepEvery));
+                } else if (g.type === 'MultiPolygon') {
+                    g.coordinates = g.coordinates.map(poly => poly.map(r => decimateRing(r, keepEvery)));
+                }
+            });
+        }
+
         let cachedGlobeFeatures = null;
         async function getGlobeFeatures() {
             if (cachedGlobeFeatures) return cachedGlobeFeatures;
             const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
+            decimateGeoData(geoData, 4); // keep 1 of every 4 points - much lighter, still a valid shape
             cachedGlobeFeatures = geoData.features.filter(featureFilter);
             return cachedGlobeFeatures;
         }
