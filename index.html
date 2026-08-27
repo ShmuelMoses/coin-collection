@@ -1572,6 +1572,18 @@ ${bodyHtml}
             return cachedGeoFeatures;
         }
 
+        // The globe uses its OWN copy, without our custom point-reduction -
+        // three-globe's mesh triangulation is far less forgiving of
+        // imperfect polygons than Leaflet is, and the simplified shapes
+        // were corrupting the 3D render (whole-sphere color bleed).
+        let cachedGlobeFeatures = null;
+        async function getGlobeFeatures() {
+            if (cachedGlobeFeatures) return cachedGlobeFeatures;
+            const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
+            cachedGlobeFeatures = geoData.features.filter(featureFilter);
+            return cachedGlobeFeatures;
+        }
+
         async function initMap() {
             countryLayers = {};
             COUNTRY_NAME_LOOKUP = {};
@@ -1635,12 +1647,13 @@ ${bodyHtml}
                 return;
             }
 
-            const features = await getGeoFeatures();
+            const features = await getGlobeFeatures();
 
             globeInstance = Globe()(globeDiv)
                 .width(globeDiv.clientWidth)
                 .height(globeDiv.clientHeight)
                 .backgroundColor('#0b1526')
+                .globeImageUrl(null) // no photographic Earth texture - plain color ocean instead
                 .polygonsData(features)
                 .polygonCapColor(f => {
                     const code = getCodeForFeature(f);
@@ -1662,6 +1675,12 @@ ${bodyHtml}
                     const code = getCodeForFeature(f);
                     if (collectionData.hasOwnProperty(code)) openModal(code);
                 });
+
+            // Since there's no Earth texture, give the bare sphere (the
+            // "ocean") our dark navy color instead of the library's default
+            if (globeInstance.globeMaterial && globeInstance.globeMaterial().color) {
+                globeInstance.globeMaterial().color.set('#0b1526');
+            }
 
             globeInstance.pointOfView({ lat: 20, lng: 10, altitude: 2.3 });
         }
