@@ -138,15 +138,9 @@
             color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
         }
         .leaflet-container path:focus { outline: none; }
-        .leaflet-control-zoom a { background: var(--panel-alt) !important; color: var(--text) !important; border: 1px solid var(--border) !important; }
-        .leaflet-control-zoom a:hover { background: var(--accent-owned) !important; color: #04222c !important; }
-        .leaflet-control-zoom { border: none !important; box-shadow: 0 2px 8px rgba(0,0,0,0.4) !important; }
-
-        /* Touchscreens already have pinch-to-zoom on the map - the +/-
-           buttons are redundant clutter there, so hide them */
-        @media (hover: none) and (pointer: coarse) {
-            .leaflet-control-zoom { display: none !important; }
-        }
+        /* Zoom is available via scroll/pinch already - the +/- buttons are
+           redundant clutter, so they're hidden everywhere */
+        .leaflet-control-zoom { display: none !important; }
         #list-view {
             display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             overflow-y: auto; padding: 20px; background: var(--bg-translucent); z-index: 400;
@@ -209,7 +203,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.5</div>
+        <div class="app-version">v0.6</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -235,10 +229,11 @@
                 <span class="legend-dot" style="background:var(--accent-none);"></span> None yet
             </button>
             <div id="map-only-controls">
+                <button id="toggle-names-btn" class="legend-btn">&#127760; Show country names</button>
                 <button id="reset-btn">&#8634; Reset view</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.5</div>
+            <div id="app-version">v0.6</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
@@ -683,6 +678,8 @@
         let collectionData = {};    // {code: {count, name}} - only countries with items
         let countryLayers = {};
         let mapDimension = '2d'; // '2d' (Leaflet) or '3d' (globe.gl)
+        let showNamesEnabled = false;
+        let globeLabelPoints = []; // [{code, name, lat, lng}] - one representative point per country, for 3D labels
         let globeInstance = null;
         let COUNTRY_NAME_LOOKUP = {};
         let activeCategoryFilter = null;
@@ -1365,15 +1362,14 @@ ${bodyHtml}
                 mapDiv.style.display = mapDimension === '2d' ? 'block' : 'none';
                 globeDiv.style.display = mapDimension === '3d' ? 'block' : 'none';
                 listDiv.style.display = 'none';
-                document.getElementById('map-only-controls').style.display = mapDimension === '2d' ? 'block' : 'none';
+                document.getElementById('map-only-controls').style.display = 'block';
                 dimensionToggle.style.display = 'flex';
-                const zc = document.querySelector('.leaflet-control-zoom');
-                if (zc) zc.style.display = mapDimension === '2d' ? 'block' : 'none';
             }
 
             btnMap.onclick = () => {
                 btnMap.classList.add('active'); btnList.classList.remove('active');
                 showMapView();
+                if (mapDimension === '3d' && globeInstance) globeInstance.resumeAnimation();
             };
             btnList.onclick = () => {
                 btnList.classList.add('active'); btnMap.classList.remove('active');
@@ -1382,14 +1378,14 @@ ${bodyHtml}
                 listDiv.style.display = 'block';
                 document.getElementById('map-only-controls').style.display = 'none';
                 dimensionToggle.style.display = 'none';
-                const zc = document.querySelector('.leaflet-control-zoom');
-                if (zc) zc.style.display = 'none';
+                if (globeInstance) globeInstance.pauseAnimation(); // stop the 3D render loop while it's hidden
             };
 
             btn2d.onclick = async () => {
                 mapDimension = '2d';
                 btn2d.classList.add('active'); btn3d.classList.remove('active');
                 showMapView();
+                if (globeInstance) globeInstance.pauseAnimation(); // stop burning CPU/GPU on a hidden 3D scene
             };
             btn3d.onclick = async () => {
                 mapDimension = '3d';
@@ -1402,6 +1398,7 @@ ${bodyHtml}
                     await new Promise(resolve => setTimeout(resolve, 30)); // let the browser paint the message first
                 }
                 await initGlobeIfNeeded();
+                globeInstance.resumeAnimation();
                 loadingEl.style.display = 'none';
             };
 
@@ -1453,9 +1450,43 @@ ${bodyHtml}
                     // now-updated filter state (same function, re-applied).
                     globeInstance.polygonCapColor(globeInstance.polygonCapColor());
                 }
+                refreshLabels2D();
+                refreshLabels3D();
                 return matched;
             }
             window._applyFilters = applyFilters;
+
+            // Rebuilds each country's tooltip as permanent (a visible
+            // label) or hover-only, based on the "Show country names"
+            // toggle combined with the current search/category filter.
+            function refreshLabels2D() {
+                Object.entries(countryLayers).forEach(([code, layers]) => {
+                    const name = COUNTRY_NAME_LOOKUP[code] || code;
+                    const shouldShow = showNamesEnabled && passesFilters(code, name);
+                    layers.forEach(layer => {
+                        if (layer.getTooltip()) layer.unbindTooltip();
+                        layer.bindTooltip(name, shouldShow
+                            ? { permanent: true, direction: 'center', className: 'country-label' }
+                            : {});
+                    });
+                });
+            }
+
+            function refreshLabels3D() {
+                if (!globeInstance) return;
+                const data = showNamesEnabled
+                    ? globeLabelPoints.filter(p => passesFilters(p.code, p.name))
+                    : [];
+                globeInstance.labelsData(data);
+            }
+            window._refreshLabels3D = refreshLabels3D;
+
+            document.getElementById('toggle-names-btn').onclick = () => {
+                showNamesEnabled = !showNamesEnabled;
+                document.getElementById('toggle-names-btn').classList.toggle('active', showNamesEnabled);
+                refreshLabels2D();
+                refreshLabels3D();
+            };
 
             function focusOnMatches(matched) {
                 if (matched.length === 0 || !leafletMap) return;
@@ -1498,7 +1529,12 @@ ${bodyHtml}
                 document.getElementById('filter-owned').classList.remove('active');
                 document.getElementById('filter-none').classList.remove('active');
                 applyFilters();
-                if (leafletMap) leafletMap.setView([20, 10], 2);
+                if (mapDimension === '2d' && leafletMap) {
+                    leafletMap.setView([20, 10], 2);
+                } else if (mapDimension === '3d' && globeInstance) {
+                    // Centered on Africa/Europe/Middle East, as requested
+                    globeInstance.pointOfView({ lat: 10, lng: 20, altitude: 2.3 }, 800);
+                }
             };
         }
 
@@ -1519,6 +1555,17 @@ ${bodyHtml}
                 } else { coords.forEach(walk); }
             })(geometry.coordinates);
             return (maxLat - minLat) * (maxLng - minLng);
+        }
+        function bboxCenter(geometry) {
+            let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+            (function walk(coords) {
+                if (typeof coords[0] === 'number') {
+                    const [lng, lat] = coords;
+                    if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+                    if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
+                } else { coords.forEach(walk); }
+            })(geometry.coordinates);
+            return { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
         }
         const MIN_VISIBLE_AREA = 0.3;
         const ALWAYS_VISIBLE_CODES = new Set(['PSE']); // exempted from the small-territory filter below
@@ -1548,11 +1595,36 @@ ${bodyHtml}
         // three-globe's 3D mesh building is far slower per-point than
         // Leaflet's 2D rendering, and a whole-sphere view doesn't need
         // nearly as much coastline detail as the close-up 2D map does.
+        // three-globe's mesh builder handles simple Polygon shapes fine,
+        // but doesn't correctly triangulate MultiPolygon countries (ones
+        // with separate islands/parts) - it was likely connecting
+        // unrelated pieces together, which is what caused the color-bleed
+        // glitch. Splitting each MultiPolygon into several single-Polygon
+        // features (same properties on each) fixes that.
+        function flattenMultiPolygons(features) {
+            const result = [];
+            features.forEach(f => {
+                if (f.geometry && f.geometry.type === 'MultiPolygon') {
+                    f.geometry.coordinates.forEach(polyCoords => {
+                        result.push({ type: 'Feature', properties: f.properties, geometry: { type: 'Polygon', coordinates: polyCoords } });
+                    });
+                } else {
+                    result.push(f);
+                }
+            });
+            return result;
+        }
+
         let cachedGlobeFeatures = null;
         async function getGlobeFeatures() {
             if (cachedGlobeFeatures) return cachedGlobeFeatures;
             const geoData = await fetch('countries_globe.geojson').then(r => r.json());
-            cachedGlobeFeatures = geoData.features.filter(featureFilter);
+            const filtered = geoData.features.filter(featureFilter);
+            globeLabelPoints = filtered.map(f => {
+                const c = bboxCenter(f.geometry);
+                return { code: getCodeForFeature(f), name: f.properties.name, lat: c.lat, lng: c.lng };
+            });
+            cachedGlobeFeatures = flattenMultiPolygons(filtered);
             return cachedGlobeFeatures;
         }
 
@@ -1565,7 +1637,8 @@ ${bodyHtml}
                 worldCopyJump: false,
                 maxBounds: [[-90, -180], [90, 180]],
                 maxBoundsViscosity: 1.0,
-                minZoom: 2
+                minZoom: 2,
+                zoomControl: false
             }).setView([20, 10], 2);
 
             const features = await getGeoFeatures();
@@ -1574,20 +1647,15 @@ ${bodyHtml}
                 const code = getCodeForFeature(feature);
                 const name = feature.properties['name'];
                 const info = collectionData[code];
-                const isFirstShapeForCode = !countryLayers[code];
                 if (!countryLayers[code]) countryLayers[code] = [];
                 countryLayers[code].push(layer);
                 COUNTRY_NAME_LOOKUP[code] = name;
 
+                layer.bindTooltip(name); // hover-only by default; refreshLabels2D() controls the permanent state
                 if (info) {
-                    if (isFirstShapeForCode) {
-                        layer.bindTooltip(name, { permanent: true, direction: 'center', className: 'country-label' });
-                    }
                     layer.on('click', () => openModal(code));
                     layer.on('mouseover', function() { if (window._passesFilters(code, name)) this.setStyle({ fillOpacity: 0.9 }); });
                     layer.on('mouseout', function() { if (window._passesFilters(code, name)) this.setStyle({ fillOpacity: 0.65 }); });
-                } else {
-                    layer.bindTooltip(name);
                 }
             }
 
@@ -1595,6 +1663,7 @@ ${bodyHtml}
                 style: { weight: 0.6, color: 'rgba(226,232,240,0.35)', fillColor: MUTED_COLOR, fillOpacity: 0.1 },
                 onEachFeature: onEachCountry
             }).addTo(leafletMap);
+            refreshLabels2D();
 
             const codes = Object.keys(countryLayers);
             for (let i = codes.length - 1; i > 0; i--) {
@@ -1648,7 +1717,15 @@ ${bodyHtml}
                 .onPolygonClick(f => {
                     const code = getCodeForFeature(f);
                     if (collectionData.hasOwnProperty(code)) openModal(code);
-                });
+                })
+                .labelsData(showNamesEnabled ? globeLabelPoints.filter(p => window._passesFilters(p.code, p.name)) : [])
+                .labelLat(d => d.lat)
+                .labelLng(d => d.lng)
+                .labelText(d => d.name)
+                .labelSize(0.7)
+                .labelColor(() => 'rgba(226,232,240,0.9)')
+                .labelDotRadius(0)
+                .labelResolution(2);
 
             // Since there's no Earth texture, give the bare sphere (the
             // "ocean") our dark navy color instead of the library's default
