@@ -8,6 +8,7 @@
     <script src="https://apis.google.com/js/api.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/globe.gl"></script>
     <style>
         * { box-sizing: border-box; }
         :root {
@@ -125,6 +126,7 @@
         #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
         #map { height: 100%; width: 100%; background: #0b1526; }
+        #globe { height: 100%; width: 100%; background: #0b1526; }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
             color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
@@ -211,6 +213,10 @@
                 <button id="btn-map" class="active">Map</button>
                 <button id="btn-list">List</button>
             </div>
+            <div class="view-toggle" id="dimension-toggle">
+                <button id="btn-2d" class="active">2D</button>
+                <button id="btn-3d">3D</button>
+            </div>
             <div class="search-wrap">
                 <input type="text" id="search-ghost" tabindex="-1" disabled>
                 <input type="text" id="search-box" placeholder="Search country" autocomplete="off">
@@ -228,6 +234,7 @@
         </div>
         <div id="cv-main">
             <div id="map"></div>
+            <div id="globe" style="display:none;"></div>
             <div id="list-view"></div>
         </div>
         <div id="modal-backdrop"></div>
@@ -666,6 +673,8 @@
         let cvCountryMap = {};      // merged: {code: {own:[images], historical:{histCode:[images]}}}
         let collectionData = {};    // {code: {count, name}} - only countries with items
         let countryLayers = {};
+        let mapDimension = '2d'; // '2d' (Leaflet) or '3d' (globe.gl)
+        let globeInstance = null;
         let COUNTRY_NAME_LOOKUP = {};
         let activeCategoryFilter = null;
         let leafletMap = null;
@@ -719,6 +728,11 @@
 
         function goBackToCollections(fromPopstate) {
             if (leafletMap) { leafletMap.remove(); leafletMap = null; }
+            if (globeInstance) {
+                document.getElementById('globe').innerHTML = ''; // clear the WebGL canvas
+                globeInstance = null;
+            }
+            mapDimension = '2d';
             countryLayers = {};
             document.getElementById('collection-view').style.display = 'none';
             document.getElementById('login-box').style.display = 'block';
@@ -1331,21 +1345,48 @@ ${bodyHtml}
         function initCollectionViewUI() {
             const btnMap = document.getElementById('btn-map');
             const btnList = document.getElementById('btn-list');
+            const btn2d = document.getElementById('btn-2d');
+            const btn3d = document.getElementById('btn-3d');
             const listDiv = document.getElementById('list-view');
+            const mapDiv = document.getElementById('map');
+            const globeDiv = document.getElementById('globe');
+            const dimensionToggle = document.getElementById('dimension-toggle');
+
+            function showMapView() {
+                mapDiv.style.display = mapDimension === '2d' ? 'block' : 'none';
+                globeDiv.style.display = mapDimension === '3d' ? 'block' : 'none';
+                listDiv.style.display = 'none';
+                document.getElementById('map-only-controls').style.display = mapDimension === '2d' ? 'block' : 'none';
+                dimensionToggle.style.display = 'flex';
+                const zc = document.querySelector('.leaflet-control-zoom');
+                if (zc) zc.style.display = mapDimension === '2d' ? 'block' : 'none';
+            }
 
             btnMap.onclick = () => {
                 btnMap.classList.add('active'); btnList.classList.remove('active');
-                listDiv.style.display = 'none';
-                document.getElementById('map-only-controls').style.display = 'block';
-                const zc = document.querySelector('.leaflet-control-zoom');
-                if (zc) zc.style.display = 'block';
+                showMapView();
             };
             btnList.onclick = () => {
                 btnList.classList.add('active'); btnMap.classList.remove('active');
+                mapDiv.style.display = 'none';
+                globeDiv.style.display = 'none';
                 listDiv.style.display = 'block';
                 document.getElementById('map-only-controls').style.display = 'none';
+                dimensionToggle.style.display = 'none';
                 const zc = document.querySelector('.leaflet-control-zoom');
                 if (zc) zc.style.display = 'none';
+            };
+
+            btn2d.onclick = async () => {
+                mapDimension = '2d';
+                btn2d.classList.add('active'); btn3d.classList.remove('active');
+                showMapView();
+            };
+            btn3d.onclick = async () => {
+                mapDimension = '3d';
+                btn3d.classList.add('active'); btn2d.classList.remove('active');
+                showMapView();
+                await initGlobeIfNeeded();
             };
 
             const searchBox = document.getElementById('search-box');
@@ -1391,6 +1432,11 @@ ${bodyHtml}
                 document.querySelectorAll('.country-item').forEach(item => {
                     item.style.display = passesFilters(item.dataset.code, item.dataset.name) ? 'flex' : 'none';
                 });
+                if (mapDimension === '3d' && globeInstance) {
+                    // Forces the globe to re-run its color accessor with the
+                    // now-updated filter state (same function, re-applied).
+                    globeInstance.polygonCapColor(globeInstance.polygonCapColor());
+                }
                 return matched;
             }
             window._applyFilters = applyFilters;
@@ -1489,6 +1535,43 @@ ${bodyHtml}
         }
 
         // ---------- Map ----------
+        // ---------- Shared geo helpers (used by both the 2D map and the 3D globe) ----------
+        const NAME_TO_CODE_OVERRIDE = { 'France': 'FRA', 'Norway': 'NOR', 'Somaliland': 'SLD' };
+        function getCodeForFeature(feature) {
+            const rawCode = feature.properties['ISO3166-1-Alpha-3'];
+            const name = feature.properties['name'];
+            return (rawCode && rawCode !== '-99') ? rawCode : (NAME_TO_CODE_OVERRIDE[name] || rawCode);
+        }
+        function bboxArea(geometry) {
+            let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+            (function walk(coords) {
+                if (typeof coords[0] === 'number') {
+                    const [lng, lat] = coords;
+                    if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
+                    if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
+                } else { coords.forEach(walk); }
+            })(geometry.coordinates);
+            return (maxLat - minLat) * (maxLng - minLng);
+        }
+        const MIN_VISIBLE_AREA = 0.3;
+        function featureFilter(feature) {
+            const code = getCodeForFeature(feature);
+            if (collectionData.hasOwnProperty(code)) return true;
+            return bboxArea(feature.geometry) >= MIN_VISIBLE_AREA;
+        }
+
+        // Fetches + simplifies + filters the world boundaries ONCE, then
+        // reuses that same array for whichever view (2D or 3D) needs it -
+        // so switching views never re-downloads or re-processes the data.
+        let cachedGeoFeatures = null;
+        async function getGeoFeatures() {
+            if (cachedGeoFeatures) return cachedGeoFeatures;
+            const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
+            simplifyGeoData(geoData, 0.02);
+            cachedGeoFeatures = geoData.features.filter(featureFilter);
+            return cachedGeoFeatures;
+        }
+
         async function initMap() {
             countryLayers = {};
             COUNTRY_NAME_LOOKUP = {};
@@ -1501,32 +1584,8 @@ ${bodyHtml}
                 minZoom: 2
             }).setView([20, 10], 2);
 
-            const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
-            simplifyGeoData(geoData, 0.02); // fewer points per shape = much lighter panning/zooming, especially on phones
+            const features = await getGeoFeatures();
 
-            const NAME_TO_CODE_OVERRIDE = { 'France': 'FRA', 'Norway': 'NOR', 'Somaliland': 'SLD' };
-            function getCodeForFeature(feature) {
-                const rawCode = feature.properties['ISO3166-1-Alpha-3'];
-                const name = feature.properties['name'];
-                return (rawCode && rawCode !== '-99') ? rawCode : (NAME_TO_CODE_OVERRIDE[name] || rawCode);
-            }
-            function bboxArea(geometry) {
-                let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-                (function walk(coords) {
-                    if (typeof coords[0] === 'number') {
-                        const [lng, lat] = coords;
-                        if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
-                        if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
-                    } else { coords.forEach(walk); }
-                })(geometry.coordinates);
-                return (maxLat - minLat) * (maxLng - minLng);
-            }
-            const MIN_VISIBLE_AREA = 0.3;
-            function featureFilter(feature) {
-                const code = getCodeForFeature(feature);
-                if (collectionData.hasOwnProperty(code)) return true;
-                return bboxArea(feature.geometry) >= MIN_VISIBLE_AREA;
-            }
             function onEachCountry(feature, layer) {
                 const code = getCodeForFeature(feature);
                 const name = feature.properties['name'];
@@ -1548,8 +1607,7 @@ ${bodyHtml}
                 }
             }
 
-            L.geoJSON(geoData, {
-                filter: featureFilter,
+            L.geoJSON({ type: 'FeatureCollection', features }, {
                 style: { weight: 0.6, color: 'rgba(226,232,240,0.35)', fillColor: MUTED_COLOR, fillOpacity: 0.1 },
                 onEachFeature: onEachCountry
             }).addTo(leafletMap);
@@ -1567,6 +1625,45 @@ ${bodyHtml}
                     });
                 }, i * 20);
             });
+        }
+
+        // ---------- 3D Globe (lazy-initialized only when first switched to) ----------
+        async function initGlobeIfNeeded() {
+            const globeDiv = document.getElementById('globe');
+            if (globeInstance) {
+                globeInstance.width(globeDiv.clientWidth).height(globeDiv.clientHeight);
+                return;
+            }
+
+            const features = await getGeoFeatures();
+
+            globeInstance = Globe()(globeDiv)
+                .width(globeDiv.clientWidth)
+                .height(globeDiv.clientHeight)
+                .backgroundColor('#0b1526')
+                .polygonsData(features)
+                .polygonCapColor(f => {
+                    const code = getCodeForFeature(f);
+                    const name = COUNTRY_NAME_LOOKUP[code] || f.properties.name;
+                    const isOwned = collectionData.hasOwnProperty(code);
+                    if (!window._passesFilters(code, name)) return MUTED_COLOR;
+                    return isOwned ? OWNED_COLOR : NONE_COLOR;
+                })
+                .polygonSideColor(() => 'rgba(0,0,0,0.2)')
+                .polygonStrokeColor(() => 'rgba(226,232,240,0.35)')
+                .polygonAltitude(0.006)
+                .polygonLabel(f => {
+                    const code = getCodeForFeature(f);
+                    const name = COUNTRY_NAME_LOOKUP[code] || f.properties.name;
+                    const info = collectionData[code];
+                    return `<div style="background:#1e293b;color:#e2e8f0;padding:4px 8px;border-radius:6px;font-size:12px;border:1px solid rgba(255,255,255,0.15);">${name}${info ? ' - ' + info.count + ' items' : ''}</div>`;
+                })
+                .onPolygonClick(f => {
+                    const code = getCodeForFeature(f);
+                    if (collectionData.hasOwnProperty(code)) openModal(code);
+                });
+
+            globeInstance.pointOfView({ lat: 20, lng: 10, altitude: 2.3 });
         }
 
         // ---------- Step 7: opening a collection ----------
