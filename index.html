@@ -129,6 +129,10 @@
         #cv-main.dimmed { filter: brightness(0.55); }
         #map { height: 100%; width: 100%; background: #0b1526; }
         #globe { height: 100%; width: 100%; background: #0b1526; }
+        #globe-loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: var(--text-dim); font-size: 14px; text-align: center; max-width: 240px; z-index: 10;
+        }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
             color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
@@ -205,7 +209,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.1</div>
+        <div class="app-version">v0.4</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -234,11 +238,12 @@
                 <button id="reset-btn">&#8634; Reset view</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.1</div>
+            <div id="app-version">v0.4</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
-            <div id="globe" style="display:none;"></div>
+            <div id="globe" style="display:none; position:relative;"></div>
+            <div id="globe-loading" style="display:none;">Building 3D globe... this can take a few seconds the first time</div>
             <div id="list-view"></div>
         </div>
         <div id="modal-backdrop"></div>
@@ -1390,7 +1395,14 @@ ${bodyHtml}
                 mapDimension = '3d';
                 btn3d.classList.add('active'); btn2d.classList.remove('active');
                 showMapView();
+                const loadingEl = document.getElementById('globe-loading');
+                const alreadyBuilt = !!globeInstance;
+                if (!alreadyBuilt) {
+                    loadingEl.style.display = 'block';
+                    await new Promise(resolve => setTimeout(resolve, 30)); // let the browser paint the message first
+                }
                 await initGlobeIfNeeded();
+                loadingEl.style.display = 'none';
             };
 
             const searchBox = document.getElementById('search-box');
@@ -1490,55 +1502,6 @@ ${bodyHtml}
             };
         }
 
-        // ---------- Geometry simplification (Douglas-Peucker) ----------
-        // The country boundary file is very detailed (precise coastlines),
-        // which is more data than this app's zoom levels actually need and
-        // makes panning/zooming feel sluggish, especially on phones. This
-        // reduces the number of points per shape while keeping the same
-        // overall outline.
-        function perpendicularDistance(p, a, b) {
-            const [x, y] = p, [x1, y1] = a, [x2, y2] = b;
-            const dx = x2 - x1, dy = y2 - y1;
-            if (dx === 0 && dy === 0) return Math.hypot(x - x1, y - y1);
-            const t = ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy);
-            const px = x1 + t * dx, py = y1 + t * dy;
-            return Math.hypot(x - px, y - py);
-        }
-
-        function douglasPeucker(points, epsilon) {
-            if (points.length < 3) return points;
-            let dmax = 0, index = 0;
-            const end = points.length - 1;
-            for (let i = 1; i < end; i++) {
-                const d = perpendicularDistance(points[i], points[0], points[end]);
-                if (d > dmax) { index = i; dmax = d; }
-            }
-            if (dmax > epsilon) {
-                const left = douglasPeucker(points.slice(0, index + 1), epsilon);
-                const right = douglasPeucker(points.slice(index), epsilon);
-                return left.slice(0, -1).concat(right);
-            }
-            return [points[0], points[end]];
-        }
-
-        function simplifyRing(ring, epsilon) {
-            const simplified = douglasPeucker(ring, epsilon);
-            return simplified.length >= 4 ? simplified : ring; // a valid ring needs at least 4 points
-        }
-
-        function simplifyGeoData(geoData, epsilon) {
-            geoData.features.forEach(f => {
-                const g = f.geometry;
-                if (!g) return;
-                if (g.type === 'Polygon') {
-                    g.coordinates = g.coordinates.map(ring => simplifyRing(ring, epsilon));
-                } else if (g.type === 'MultiPolygon') {
-                    g.coordinates = g.coordinates.map(poly => poly.map(ring => simplifyRing(ring, epsilon)));
-                }
-            });
-        }
-
-        // ---------- Map ----------
         // ---------- Shared geo helpers (used by both the 2D map and the 3D globe) ----------
         const NAME_TO_CODE_OVERRIDE = { 'France': 'FRA', 'Norway': 'NOR', 'Somaliland': 'SLD' };
         function getCodeForFeature(feature) {
@@ -1564,51 +1527,19 @@ ${bodyHtml}
             return bboxArea(feature.geometry) >= MIN_VISIBLE_AREA;
         }
 
-        // Fetches + simplifies + filters the world boundaries ONCE, then
-        // reuses that same array for whichever view (2D or 3D) needs it -
-        // so switching views never re-downloads or re-processes the data.
+        // Fetches the world boundaries ONCE and reuses that same array for
+        // whichever view (2D map or 3D globe) needs it. The file itself is
+        // pre-simplified (via Mapshaper, topology-aware - shared borders
+        // stay identical between neighboring countries) and hosted right
+        // alongside this page, so there's no external dependency and no
+        // risk of the broken-geometry rendering issues our own homemade
+        // simplification code used to cause.
         let cachedGeoFeatures = null;
         async function getGeoFeatures() {
             if (cachedGeoFeatures) return cachedGeoFeatures;
-            const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
-            simplifyGeoData(geoData, 0.02);
+            const geoData = await fetch('countries.geojson').then(r => r.json());
             cachedGeoFeatures = geoData.features.filter(featureFilter);
             return cachedGeoFeatures;
-        }
-
-        // The globe uses its OWN copy of the data with a DIFFERENT, gentler
-        // point-reduction than the 2D map: taking every Nth coordinate
-        // ("decimation") instead of the smarter but riskier algorithm used
-        // for Leaflet. It always keeps a valid, still-closed shape, which
-        // matters a lot more for three-globe's 3D mesh building than it did
-        // for Leaflet - and it's cheap enough to avoid freezing the page.
-        function decimateRing(ring, keepEvery) {
-            if (ring.length <= 24) return ring; // small shapes: leave alone
-            const result = [];
-            for (let i = 0; i < ring.length; i += keepEvery) result.push(ring[i]);
-            const first = ring[0], last = result[result.length - 1];
-            if (last[0] !== first[0] || last[1] !== first[1]) result.push(first); // keep the ring closed
-            return result.length >= 4 ? result : ring;
-        }
-        function decimateGeoData(geoData, keepEvery) {
-            geoData.features.forEach(f => {
-                const g = f.geometry;
-                if (!g) return;
-                if (g.type === 'Polygon') {
-                    g.coordinates = g.coordinates.map(r => decimateRing(r, keepEvery));
-                } else if (g.type === 'MultiPolygon') {
-                    g.coordinates = g.coordinates.map(poly => poly.map(r => decimateRing(r, keepEvery)));
-                }
-            });
-        }
-
-        let cachedGlobeFeatures = null;
-        async function getGlobeFeatures() {
-            if (cachedGlobeFeatures) return cachedGlobeFeatures;
-            const geoData = await fetch('https://cdn.jsdelivr.net/gh/datasets/geo-countries/data/countries.geojson').then(r => r.json());
-            decimateGeoData(geoData, 4); // keep 1 of every 4 points - much lighter, still a valid shape
-            cachedGlobeFeatures = geoData.features.filter(featureFilter);
-            return cachedGlobeFeatures;
         }
 
         async function initMap() {
@@ -1674,7 +1605,7 @@ ${bodyHtml}
                 return;
             }
 
-            const features = await getGlobeFeatures();
+            const features = await getGeoFeatures();
 
             globeInstance = Globe()(globeDiv)
                 .width(globeDiv.clientWidth)
