@@ -8,7 +8,6 @@
     <script src="https://apis.google.com/js/api.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/globe.gl"></script>
     <style>
         * { box-sizing: border-box; }
         :root {
@@ -128,11 +127,6 @@
         #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
         #map { height: 100%; width: 100%; background: #0b1526; }
-        #globe { height: 100%; width: 100%; background: #0b1526; }
-        #globe-loading {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: var(--text-dim); font-size: 14px; text-align: center; max-width: 240px; z-index: 10;
-        }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
             color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
@@ -203,42 +197,31 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.6</div>
+        <div class="app-version">v0.7</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div class="view-toggle">
-                <button id="btn-map" class="active">Map</button>
-                <button id="btn-list">List</button>
-            </div>
-            <div class="view-toggle" id="dimension-toggle">
-                <button id="btn-2d" class="active">2D</button>
-                <button id="btn-3d">3D</button>
-            </div>
+            <button id="view-toggle-btn" class="legend-btn">&#128506; Map</button>
             <div class="search-wrap">
                 <input type="text" id="search-ghost" tabindex="-1" disabled>
                 <input type="text" id="search-box" placeholder="Search country" autocomplete="off">
             </div>
-            <button id="filter-owned" class="legend-btn">
-                <span class="legend-dot" style="background:var(--accent-owned);"></span> Have items
-            </button>
-            <button id="filter-none" class="legend-btn">
-                <span class="legend-dot" style="background:var(--accent-none);"></span> None yet
+            <button id="color-mode-btn" class="legend-btn">
+                <span class="legend-dot" id="color-mode-dot" style="background:var(--muted);"></span>
+                <span id="color-mode-label">Coloring: Off</span>
             </button>
             <div id="map-only-controls">
                 <button id="toggle-names-btn" class="legend-btn">&#127760; Show country names</button>
                 <button id="reset-btn">&#8634; Reset view</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.6</div>
+            <div id="app-version">v0.7</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
-            <div id="globe" style="display:none; position:relative;"></div>
-            <div id="globe-loading" style="display:none;">Building 3D globe... this can take a few seconds the first time</div>
             <div id="list-view"></div>
         </div>
         <div id="modal-backdrop"></div>
@@ -677,12 +660,10 @@
         let cvCountryMap = {};      // merged: {code: {own:[images], historical:{histCode:[images]}}}
         let collectionData = {};    // {code: {count, name}} - only countries with items
         let countryLayers = {};
-        let mapDimension = '2d'; // '2d' (Leaflet) or '3d' (globe.gl)
         let showNamesEnabled = false;
-        let globeLabelPoints = []; // [{code, name, lat, lng}] - one representative point per country, for 3D labels
-        let globeInstance = null;
         let COUNTRY_NAME_LOOKUP = {};
-        let activeCategoryFilter = null;
+        let colorMode = 'neither'; // 'neither' | 'owned' | 'none' | 'both' - cycles via the color-mode button
+        let currentView = 'map';   // 'map' | 'list'
         let leafletMap = null;
 
         // Merges historical-entity folders (USSR, Ottoman Empire, etc.)
@@ -734,11 +715,8 @@
 
         function goBackToCollections(fromPopstate) {
             if (leafletMap) { leafletMap.remove(); leafletMap = null; }
-            if (globeInstance) {
-                document.getElementById('globe').innerHTML = ''; // clear the WebGL canvas
-                globeInstance = null;
-            }
-            mapDimension = '2d';
+            currentView = 'map';
+            colorMode = 'neither';
             countryLayers = {};
             document.getElementById('collection-view').style.display = 'none';
             document.getElementById('login-box').style.display = 'block';
@@ -1349,58 +1327,28 @@ ${bodyHtml}
 
         // ---------- View toggle, search, filters (unified logic) ----------
         function initCollectionViewUI() {
-            const btnMap = document.getElementById('btn-map');
-            const btnList = document.getElementById('btn-list');
-            const btn2d = document.getElementById('btn-2d');
-            const btn3d = document.getElementById('btn-3d');
+            const viewToggleBtn = document.getElementById('view-toggle-btn');
             const listDiv = document.getElementById('list-view');
             const mapDiv = document.getElementById('map');
-            const globeDiv = document.getElementById('globe');
-            const dimensionToggle = document.getElementById('dimension-toggle');
 
-            function showMapView() {
-                mapDiv.style.display = mapDimension === '2d' ? 'block' : 'none';
-                globeDiv.style.display = mapDimension === '3d' ? 'block' : 'none';
-                listDiv.style.display = 'none';
-                document.getElementById('map-only-controls').style.display = 'block';
-                dimensionToggle.style.display = 'flex';
-            }
-
-            btnMap.onclick = () => {
-                btnMap.classList.add('active'); btnList.classList.remove('active');
-                showMapView();
-                if (mapDimension === '3d' && globeInstance) globeInstance.resumeAnimation();
-            };
-            btnList.onclick = () => {
-                btnList.classList.add('active'); btnMap.classList.remove('active');
-                mapDiv.style.display = 'none';
-                globeDiv.style.display = 'none';
-                listDiv.style.display = 'block';
-                document.getElementById('map-only-controls').style.display = 'none';
-                dimensionToggle.style.display = 'none';
-                if (globeInstance) globeInstance.pauseAnimation(); // stop the 3D render loop while it's hidden
-            };
-
-            btn2d.onclick = async () => {
-                mapDimension = '2d';
-                btn2d.classList.add('active'); btn3d.classList.remove('active');
-                showMapView();
-                if (globeInstance) globeInstance.pauseAnimation(); // stop burning CPU/GPU on a hidden 3D scene
-            };
-            btn3d.onclick = async () => {
-                mapDimension = '3d';
-                btn3d.classList.add('active'); btn2d.classList.remove('active');
-                showMapView();
-                const loadingEl = document.getElementById('globe-loading');
-                const alreadyBuilt = !!globeInstance;
-                if (!alreadyBuilt) {
-                    loadingEl.style.display = 'block';
-                    await new Promise(resolve => setTimeout(resolve, 30)); // let the browser paint the message first
+            function renderViewToggle() {
+                if (currentView === 'map') {
+                    mapDiv.style.display = 'block';
+                    listDiv.style.display = 'none';
+                    document.getElementById('map-only-controls').style.display = 'block';
+                    viewToggleBtn.innerHTML = '&#128506; Map'; // shows current mode; click switches to the other
+                } else {
+                    mapDiv.style.display = 'none';
+                    listDiv.style.display = 'block';
+                    document.getElementById('map-only-controls').style.display = 'none';
+                    viewToggleBtn.innerHTML = '&#128203; List';
                 }
-                await initGlobeIfNeeded();
-                globeInstance.resumeAnimation();
-                loadingEl.style.display = 'none';
+            }
+            viewToggleBtn.onclick = () => {
+                currentView = currentView === 'map' ? 'list' : 'map';
+                renderViewToggle();
             };
+            renderViewToggle();
 
             const searchBox = document.getElementById('search-box');
             const searchGhost = document.getElementById('search-ghost');
@@ -1418,16 +1366,20 @@ ${bodyHtml}
                 const suggestion = allNames.find(n => n.toLowerCase().startsWith(typedLower));
                 searchGhost.value = suggestion ? typed + suggestion.slice(typed.length) : '';
             }
+            // Category coloring only applies when NOT actively searching -
+            // that way search always works, even while colorMode is 'neither'.
             function passesFilters(code, name) {
                 const query = searchBox.value.trim().toLowerCase();
                 const searchOk = query === '' || matchesQuery(code, name, query);
+                if (!searchOk) return false;
+                if (query !== '') return true;
                 const isOwned = collectionData.hasOwnProperty(code);
-                let categoryOk = true;
-                if (activeCategoryFilter === 'owned') categoryOk = isOwned;
-                if (activeCategoryFilter === 'none') categoryOk = !isOwned;
-                return searchOk && categoryOk;
+                if (colorMode === 'neither') return false;
+                if (colorMode === 'owned') return isOwned;
+                if (colorMode === 'none') return !isOwned;
+                return true; // 'both'
             }
-            window._passesFilters = passesFilters; // used by map hover handlers below
+            window._passesFilters = passesFilters;
 
             function applyFilters() {
                 const matched = [];
@@ -1445,20 +1397,14 @@ ${bodyHtml}
                 document.querySelectorAll('.country-item').forEach(item => {
                     item.style.display = passesFilters(item.dataset.code, item.dataset.name) ? 'flex' : 'none';
                 });
-                if (mapDimension === '3d' && globeInstance) {
-                    // Forces the globe to re-run its color accessor with the
-                    // now-updated filter state (same function, re-applied).
-                    globeInstance.polygonCapColor(globeInstance.polygonCapColor());
-                }
                 refreshLabels2D();
-                refreshLabels3D();
                 return matched;
             }
             window._applyFilters = applyFilters;
 
             // Rebuilds each country's tooltip as permanent (a visible
             // label) or hover-only, based on the "Show country names"
-            // toggle combined with the current search/category filter.
+            // toggle combined with the current search/color mode.
             function refreshLabels2D() {
                 Object.entries(countryLayers).forEach(([code, layers]) => {
                     const name = COUNTRY_NAME_LOOKUP[code] || code;
@@ -1472,20 +1418,10 @@ ${bodyHtml}
                 });
             }
 
-            function refreshLabels3D() {
-                if (!globeInstance) return;
-                const data = showNamesEnabled
-                    ? globeLabelPoints.filter(p => passesFilters(p.code, p.name))
-                    : [];
-                globeInstance.labelsData(data);
-            }
-            window._refreshLabels3D = refreshLabels3D;
-
             document.getElementById('toggle-names-btn').onclick = () => {
                 showNamesEnabled = !showNamesEnabled;
                 document.getElementById('toggle-names-btn').classList.toggle('active', showNamesEnabled);
                 refreshLabels2D();
-                refreshLabels3D();
             };
 
             function focusOnMatches(matched) {
@@ -1514,27 +1450,32 @@ ${bodyHtml}
                 }
             };
 
-            function toggleCategoryFilter(name) {
-                activeCategoryFilter = (activeCategoryFilter === name) ? null : name;
-                document.getElementById('filter-owned').classList.toggle('active', activeCategoryFilter === 'owned');
-                document.getElementById('filter-none').classList.toggle('active', activeCategoryFilter === 'none');
-                applyFilters();
+            // Single button cycling through 4 coloring modes
+            const COLOR_MODES = [
+                { key: 'neither', label: 'Coloring: Off', color: 'var(--muted)' },
+                { key: 'owned', label: 'Have items', color: 'var(--accent-owned)' },
+                { key: 'none', label: 'None yet', color: 'var(--accent-none)' },
+                { key: 'both', label: 'Have items + None yet', color: 'linear-gradient(90deg, var(--accent-owned), var(--accent-none))' },
+            ];
+            function renderColorModeButton() {
+                const mode = COLOR_MODES.find(m => m.key === colorMode);
+                document.getElementById('color-mode-label').textContent = mode.label;
+                document.getElementById('color-mode-dot').style.background = mode.color;
             }
-            document.getElementById('filter-owned').onclick = () => toggleCategoryFilter('owned');
-            document.getElementById('filter-none').onclick = () => toggleCategoryFilter('none');
+            document.getElementById('color-mode-btn').onclick = () => {
+                const idx = COLOR_MODES.findIndex(m => m.key === colorMode);
+                colorMode = COLOR_MODES[(idx + 1) % COLOR_MODES.length].key;
+                renderColorModeButton();
+                applyFilters();
+            };
+            renderColorModeButton();
 
             document.getElementById('reset-btn').onclick = () => {
                 searchBox.value = ''; searchGhost.value = '';
-                activeCategoryFilter = null;
-                document.getElementById('filter-owned').classList.remove('active');
-                document.getElementById('filter-none').classList.remove('active');
+                colorMode = 'neither';
+                renderColorModeButton();
                 applyFilters();
-                if (mapDimension === '2d' && leafletMap) {
-                    leafletMap.setView([20, 10], 2);
-                } else if (mapDimension === '3d' && globeInstance) {
-                    // Centered on Africa/Europe/Middle East, as requested
-                    globeInstance.pointOfView({ lat: 10, lng: 20, altitude: 2.3 }, 800);
-                }
+                if (leafletMap) leafletMap.setView([20, 10], 2);
             };
         }
 
@@ -1556,17 +1497,6 @@ ${bodyHtml}
             })(geometry.coordinates);
             return (maxLat - minLat) * (maxLng - minLng);
         }
-        function bboxCenter(geometry) {
-            let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-            (function walk(coords) {
-                if (typeof coords[0] === 'number') {
-                    const [lng, lat] = coords;
-                    if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
-                    if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
-                } else { coords.forEach(walk); }
-            })(geometry.coordinates);
-            return { lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 };
-        }
         const MIN_VISIBLE_AREA = 0.3;
         const ALWAYS_VISIBLE_CODES = new Set(['PSE']); // exempted from the small-territory filter below
         function featureFilter(feature) {
@@ -1576,56 +1506,17 @@ ${bodyHtml}
             return bboxArea(feature.geometry) >= MIN_VISIBLE_AREA;
         }
 
-        // Fetches the world boundaries ONCE and reuses that same array for
-        // whichever view (2D map or 3D globe) needs it. The file itself is
-        // pre-simplified (via Mapshaper, topology-aware - shared borders
-        // stay identical between neighboring countries) and hosted right
-        // alongside this page, so there's no external dependency and no
-        // risk of the broken-geometry rendering issues our own homemade
-        // simplification code used to cause.
+        // Fetches the world boundaries ONCE and reuses that same array
+        // every time the map is (re)built. The file itself is pre-
+        // simplified (via Mapshaper, topology-aware - shared borders stay
+        // identical between neighboring countries) and hosted right
+        // alongside this page, so there's no external dependency.
         let cachedGeoFeatures = null;
         async function getGeoFeatures() {
             if (cachedGeoFeatures) return cachedGeoFeatures;
             const geoData = await fetch('countries.geojson').then(r => r.json());
             cachedGeoFeatures = geoData.features.filter(featureFilter);
             return cachedGeoFeatures;
-        }
-
-        // The globe loads its OWN, much more aggressively simplified file -
-        // three-globe's 3D mesh building is far slower per-point than
-        // Leaflet's 2D rendering, and a whole-sphere view doesn't need
-        // nearly as much coastline detail as the close-up 2D map does.
-        // three-globe's mesh builder handles simple Polygon shapes fine,
-        // but doesn't correctly triangulate MultiPolygon countries (ones
-        // with separate islands/parts) - it was likely connecting
-        // unrelated pieces together, which is what caused the color-bleed
-        // glitch. Splitting each MultiPolygon into several single-Polygon
-        // features (same properties on each) fixes that.
-        function flattenMultiPolygons(features) {
-            const result = [];
-            features.forEach(f => {
-                if (f.geometry && f.geometry.type === 'MultiPolygon') {
-                    f.geometry.coordinates.forEach(polyCoords => {
-                        result.push({ type: 'Feature', properties: f.properties, geometry: { type: 'Polygon', coordinates: polyCoords } });
-                    });
-                } else {
-                    result.push(f);
-                }
-            });
-            return result;
-        }
-
-        let cachedGlobeFeatures = null;
-        async function getGlobeFeatures() {
-            if (cachedGlobeFeatures) return cachedGlobeFeatures;
-            const geoData = await fetch('countries_globe.geojson').then(r => r.json());
-            const filtered = geoData.features.filter(featureFilter);
-            globeLabelPoints = filtered.map(f => {
-                const c = bboxCenter(f.geometry);
-                return { code: getCodeForFeature(f), name: f.properties.name, lat: c.lat, lng: c.lng };
-            });
-            cachedGlobeFeatures = flattenMultiPolygons(filtered);
-            return cachedGlobeFeatures;
         }
 
         async function initMap() {
@@ -1663,77 +1554,10 @@ ${bodyHtml}
                 style: { weight: 0.6, color: 'rgba(226,232,240,0.35)', fillColor: MUTED_COLOR, fillOpacity: 0.1 },
                 onEachFeature: onEachCountry
             }).addTo(leafletMap);
-            refreshLabels2D();
 
-            const codes = Object.keys(countryLayers);
-            for (let i = codes.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [codes[i], codes[j]] = [codes[j], codes[i]];
-            }
-            codes.forEach((code, i) => {
-                setTimeout(() => {
-                    const isOwned = collectionData.hasOwnProperty(code);
-                    countryLayers[code].forEach(layer => {
-                        layer.setStyle({ fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 });
-                    });
-                }, i * 20);
-            });
-        }
-
-        // ---------- 3D Globe (lazy-initialized only when first switched to) ----------
-        async function initGlobeIfNeeded() {
-            const globeDiv = document.getElementById('globe');
-            if (globeInstance) {
-                globeInstance.width(globeDiv.clientWidth).height(globeDiv.clientHeight);
-                return;
-            }
-
-            // Already a completely separate fetch/array from the 2D map's -
-            // no cloning needed, they never share memory.
-            const features = await getGlobeFeatures();
-
-            globeInstance = Globe()(globeDiv)
-                .width(globeDiv.clientWidth)
-                .height(globeDiv.clientHeight)
-                .backgroundColor('#0b1526')
-                .globeImageUrl(null) // no photographic Earth texture - plain color ocean instead
-                .polygonsData(features)
-                .polygonCapColor(f => {
-                    const code = getCodeForFeature(f);
-                    const name = COUNTRY_NAME_LOOKUP[code] || f.properties.name;
-                    const isOwned = collectionData.hasOwnProperty(code);
-                    if (!window._passesFilters(code, name)) return MUTED_COLOR;
-                    return isOwned ? OWNED_COLOR : NONE_COLOR;
-                })
-                .polygonSideColor(() => 'rgba(0,0,0,0.2)')
-                .polygonStrokeColor(() => 'rgba(226,232,240,0.35)')
-                .polygonAltitude(0.006)
-                .polygonLabel(f => {
-                    const code = getCodeForFeature(f);
-                    const name = COUNTRY_NAME_LOOKUP[code] || f.properties.name;
-                    const info = collectionData[code];
-                    return `<div style="background:#1e293b;color:#e2e8f0;padding:4px 8px;border-radius:6px;font-size:12px;border:1px solid rgba(255,255,255,0.15);">${name}${info ? ' - ' + info.count + ' items' : ''}</div>`;
-                })
-                .onPolygonClick(f => {
-                    const code = getCodeForFeature(f);
-                    if (collectionData.hasOwnProperty(code)) openModal(code);
-                })
-                .labelsData(showNamesEnabled ? globeLabelPoints.filter(p => window._passesFilters(p.code, p.name)) : [])
-                .labelLat(d => d.lat)
-                .labelLng(d => d.lng)
-                .labelText(d => d.name)
-                .labelSize(0.7)
-                .labelColor(() => 'rgba(226,232,240,0.9)')
-                .labelDotRadius(0)
-                .labelResolution(2);
-
-            // Since there's no Earth texture, give the bare sphere (the
-            // "ocean") our dark navy color instead of the library's default
-            if (globeInstance.globeMaterial && globeInstance.globeMaterial().color) {
-                globeInstance.globeMaterial().color.set('#0b1526');
-            }
-
-            globeInstance.pointOfView({ lat: 20, lng: 10, altitude: 2.3 });
+            // Applies the current coloring mode (default: none shown at
+            // all) instead of always revealing colors on load.
+            window._applyFilters();
         }
 
         // ---------- Step 7: opening a collection ----------
