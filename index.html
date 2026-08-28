@@ -296,14 +296,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">2.04</div>
+        <div class="app-version">2.05</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">2.04</div>
+            <div id="app-version" title="Thumbnail cache info">2.05</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -1088,15 +1088,33 @@
         const FRAME_LAT_MIN = -60, FRAME_LAT_MAX = 84;
         const FRAME_LON_MIN = -169, FRAME_LON_MAX = 191; // matches maxBounds' custom Bering-Strait seam
         const FRAME_BOUNDS = [[FRAME_LAT_MIN, FRAME_LON_MIN], [FRAME_LAT_MAX, FRAME_LON_MAX]];
-        const GRID_LON_STEP = 30, GRID_LAT_STEP = 20;
+        // ONE step for both grid directions, measured in projected units.
+        // Longitude degrees are already unstretched in Mercator, so this is
+        // 30 degrees of longitude horizontally; vertically it's 30 units of
+        // PROJECTED y, deliberately NOT 30 degrees of latitude. Stepping the
+        // horizontal lines by a fixed number of DEGREES (it was 20) is what
+        // made the spacing look wrong: Mercator stretches degrees hugely
+        // toward the pole, so the 60->80 band came out ~455px tall while
+        // every other band was 145-227px - which reads as a missing line
+        // sitting in the middle of that oversized gap. Using one step in
+        // projected space for both directions makes every grid cell an
+        // equal-sized square on screen, which is what "evenly spaced" means
+        // visually and what an antique ruled map actually looks like.
+        const GRID_STEP = 30;
         const FRAME_BAND_THICKNESS = 1.6; // projected-degree-equivalent units, same scale as longitude degrees
         const FRAME_STRIPE_LEN = 12;      // target stripe length, same units
 
-        // Compass rose placement: centered exactly on a grid intersection
-        // (lon -120 is a GRID_LON_STEP multiple, lat -20 a GRID_LAT_STEP
-        // multiple - both fall on real grid lines drawn by buildMapFrame),
-        // in open Pacific water - one grid intersection west of -90/-20.
-        const COMPASS_CENTER_LAT = -20, COMPASS_CENTER_LON = -120, COMPASS_HALF_SIZE = 11;
+        // Compass rose placement: centered exactly on a grid intersection,
+        // in open South Pacific water. Both coordinates are DERIVED from the
+        // grid rather than written as literals, so they can't silently drift
+        // off an intersection again if the grid step ever changes: the
+        // longitude is a plain GRID_STEP multiple, and the latitude is
+        // whichever latitude the grid line at projected y = -GRID_STEP
+        // falls on (about -28.7 deg, near Easter Island - it is NOT -30 deg,
+        // because the grid is spaced in projected space, not degrees).
+        const COMPASS_CENTER_LAT = inverseMercatorY(-GRID_STEP);
+        const COMPASS_CENTER_LON = -4 * GRID_STEP; // -120
+        const COMPASS_HALF_SIZE = 11;
         const COMPASS_BOUNDS = [
             [COMPASS_CENTER_LAT - COMPASS_HALF_SIZE, COMPASS_CENTER_LON - COMPASS_HALF_SIZE],
             [COMPASS_CENTER_LAT + COMPASS_HALF_SIZE, COMPASS_CENTER_LON + COMPASS_HALF_SIZE]
@@ -2106,18 +2124,16 @@ ${bodyHtml}
         // instead of raw degrees). No text labels this time - just evenly
         // spaced lines, kept inside the border.
         function buildMapFrame() {
-            // Rendered on its own dedicated SVG renderer, NOT the shared
-            // canvas the ~250 country polygons use (preferCanvas:true on
-            // the map). Two earlier attempts at the "one grid line near the
-            // pole sometimes never paints" bug (invalidateSize(), then an
-            // explicit layer.redraw()) both assumed it was a one-off missed
-            // repaint on the shared canvas - but it kept recurring in the
-            // exact same spot, which points to something structural about
-            // that canvas's batched dirty-region repaint rather than a
-            // random timing miss. SVG elements are persistent DOM nodes -
-            // once added there is no batched repaint step that can skip
-            // one - so moving the frame here removes the failure mode
-            // entirely instead of nudging it to be less likely.
+            // Rendered on its own dedicated SVG renderer rather than the
+            // shared canvas the ~250 country polygons use (preferCanvas:true
+            // on the map). NOTE: this was originally added while chasing a
+            // "grid line near the pole is missing" report, on the theory that
+            // the shared canvas was dropping it. That theory was wrong - the
+            // line was always being drawn correctly; the real problem was
+            // grid SPACING (see GRID_STEP above). This is kept anyway simply
+            // because SVG renders these thin hairlines a little more crisply
+            // than canvas does, and ~40 frame elements is far too few for the
+            // usual canvas-over-SVG performance argument to apply.
             const frameRenderer = L.svg({ padding: 2 });
             const group = L.layerGroup();
             const lineStyle = { color: FRAME_COLOR, weight: 1, opacity: 0.8, interactive: false, fill: false, renderer: frameRenderer };
@@ -2173,14 +2189,29 @@ ${bodyHtml}
             ];
             L.polyline(innerRing, lineStyle).addTo(group);
 
-            // Lat/long grid, confined to the area inside the border
-            for (let lon = Math.ceil(FRAME_LON_MIN / GRID_LON_STEP) * GRID_LON_STEP; lon < FRAME_LON_MAX; lon += GRID_LON_STEP) {
+            // Lat/long grid, confined to the area inside the border.
+            // Meridians: plain GRID_STEP degrees of longitude - Mercator
+            // doesn't stretch the x axis, so equal degrees here already
+            // means equal pixels on screen.
+            for (let lon = Math.ceil(FRAME_LON_MIN / GRID_STEP) * GRID_STEP; lon < FRAME_LON_MAX; lon += GRID_STEP) {
                 if (lon <= lonInnerLeft || lon >= lonInnerRight) continue;
                 L.polyline([[latInnerBottom, lon], [latInnerTop, lon]], gridStyle).addTo(group);
             }
-            for (let lat = Math.ceil(FRAME_LAT_MIN / GRID_LAT_STEP) * GRID_LAT_STEP; lat < FRAME_LAT_MAX; lat += GRID_LAT_STEP) {
-                if (lat <= latInnerBottom || lat >= latInnerTop) continue;
-                L.polyline([[lat, lonInnerLeft], [lat, lonInnerRight]], gridStyle).addTo(group);
+            // Parallels: stepped through PROJECTED y by the same GRID_STEP,
+            // then converted back to a latitude to draw at. k=0 is the
+            // equator (so it's always a ruled line, as on a real map) and
+            // every other line is a whole number of steps away from it, which
+            // puts them at equal PIXEL intervals rather than equal degrees.
+            // The resulting latitudes are not round numbers (~28.7, 51.3,
+            // 66.5, 76.3, 81.7 deg) - that's expected and correct; the grid
+            // is decorative and has no degree labels, so even spacing is what
+            // matters, and it now matches the meridian spacing exactly,
+            // making every cell a square.
+            const yBottomLimit = mercatorY(latInnerBottom), yTopLimit = mercatorY(latInnerTop);
+            for (let k = Math.ceil(yBottomLimit / GRID_STEP); k * GRID_STEP < yTopLimit; k++) {
+                const y = k * GRID_STEP;
+                if (y <= yBottomLimit || y >= yTopLimit) continue;
+                L.polyline([[inverseMercatorY(y), lonInnerLeft], [inverseMercatorY(y), lonInnerRight]], gridStyle).addTo(group);
             }
             return group;
         }
