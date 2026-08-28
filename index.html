@@ -141,7 +141,6 @@
                 height: 30px; line-height: 28px; font-size: 12px; padding: 0 8px;
                 -webkit-appearance: none; appearance: none;
             }
-            #toggle-names-btn { display: none !important; } /* map-only, low priority on a small screen */
             .legend-btn { font-size: 11px; padding: 6px 8px; margin-bottom: 0; width: auto; }
             .box { max-width: 92vw; padding: 24px 20px; }
             /* No override needed here anymore - #list-view's plain base
@@ -288,14 +287,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.7</div>
+        <div class="app-version">v1.8</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">v1.7</div>
+            <div id="app-version" title="Thumbnail cache info">v1.8</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -312,7 +311,6 @@
                         <span class="legend-dot" id="color-mode-dot" style="background:linear-gradient(90deg, var(--accent-owned), var(--accent-none));"></span>
                         <span id="color-mode-label" style="display:none;"></span>
                     </button>
-                    <button id="toggle-names-btn" class="icon-btn" title="Show country names">N</button>
                     <button id="reset-btn" class="icon-btn" title="Reset view">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
                     </button>
@@ -1083,10 +1081,10 @@
         const FRAME_STRIPE_LEN = 12;      // target stripe length, same units
 
         // Compass rose placement: centered exactly on a grid intersection
-        // (lon -90 is a GRID_LON_STEP multiple, lat -20 a GRID_LAT_STEP
+        // (lon -120 is a GRID_LON_STEP multiple, lat -20 a GRID_LAT_STEP
         // multiple - both fall on real grid lines drawn by buildMapFrame),
-        // in open Pacific water off the Peru/Chile coast.
-        const COMPASS_CENTER_LAT = -20, COMPASS_CENTER_LON = -90, COMPASS_HALF_SIZE = 11;
+        // in open Pacific water - one grid intersection west of -90/-20.
+        const COMPASS_CENTER_LAT = -20, COMPASS_CENTER_LON = -120, COMPASS_HALF_SIZE = 11;
         const COMPASS_BOUNDS = [
             [COMPASS_CENTER_LAT - COMPASS_HALF_SIZE, COMPASS_CENTER_LON - COMPASS_HALF_SIZE],
             [COMPASS_CENTER_LAT + COMPASS_HALF_SIZE, COMPASS_CENTER_LON + COMPASS_HALF_SIZE]
@@ -1096,7 +1094,11 @@
         let cvCountryMap = {};      // merged: {code: {own:[images], historical:{histCode:[images]}}}
         let collectionData = {};    // {code: {count, name}} - only countries with items
         let countryLayers = {};
-        let showNamesEnabled = false;
+        // Countries whose name label is pinned "on" because they were
+        // clicked (only applies to countries with no collection data -
+        // clicking an owned one opens its modal instead, which already
+        // shows the name). Replaces the old manual "Show names" toggle.
+        let clickedLabelCodes = new Set();
         let COUNTRY_NAME_LOOKUP = {};
         let colorMode = 'both'; // 'owned' | 'none' | 'both' - cycles via the color-mode button ('neither'/Off was removed)
         let currentView = 'map';   // 'map' | 'list'
@@ -1798,7 +1800,6 @@ ${bodyHtml}
                 const showMap = currentView === 'map';
                 mapDiv.style.display = showMap ? 'block' : 'none'; // hiding #map also hides the frame/compass layers on it
                 listDiv.style.display = showMap ? 'none' : 'block';
-                document.getElementById('toggle-names-btn').style.display = showMap ? 'flex' : 'none'; // map-only control
                 if (showMap) {
                     viewToggleBtn.innerHTML = MAP_ICON_SVG; // shows current mode icon; click switches to the other
                     viewToggleBtn.title = 'Switch to List view';
@@ -1843,25 +1844,30 @@ ${bodyHtml}
             }
             window._passesFilters = passesFilters;
 
-            // `animate: true` gives the "filling in country by country" reveal
-            // that used to happen on load/reset - every matching country starts
-            // muted and gets its real color in a random order, spread over
-            // ~REVEAL_MS total, purely decorative. Every other caller (typing
-            // in search, toggling color mode, etc.) still colors instantly -
-            // animating those too would just make the UI feel laggy.
-            const REVEAL_MS = 5000;
+            // `animate: true` gives the "filling in / erasing country by
+            // country" transition, in random order, over `durationMs`.
+            // Only countries that actually CHANGE (muted->colored or
+            // colored->muted) are animated - `shownCodes` remembers what's
+            // currently on screen so each call only touches what's actually
+            // different this time, instead of restarting every country's
+            // animation from scratch. Every other caller (typing in
+            // search, etc.) still colors instantly - animating that too
+            // would make typing feel laggy.
+            const REVEAL_MS = 5000;      // initial load / Reset view
+            const TRANSITION_MS = 3000;  // switching the color-mode button
+            let shownCodes = new Set();  // codes currently rendered as colored (not muted)
             function applyFilters(opts) {
                 const animate = !!(opts && opts.animate);
+                const durationMs = (opts && opts.durationMs) || REVEAL_MS;
                 const matched = [];
-                const toReveal = [];
+                const changes = []; // {layers, isOwned, toShow} - only codes whose shown/hidden state actually flips
                 Object.entries(countryLayers).forEach(([code, layers]) => {
                     const name = COUNTRY_NAME_LOOKUP[code] || code;
                     const isOwned = collectionData.hasOwnProperty(code);
                     const show = passesFilters(code, name);
                     if (show) matched.push(code);
                     if (animate) {
-                        layers.forEach(layer => layer.setStyle({ fillColor: MUTED_COLOR, fillOpacity: 0.18 }));
-                        if (show) toReveal.push({ layers, isOwned });
+                        if (shownCodes.has(code) !== show) changes.push({ layers, isOwned, toShow: show });
                     } else {
                         layers.forEach(layer => {
                             layer.setStyle(show
@@ -1869,22 +1875,23 @@ ${bodyHtml}
                                 : { fillColor: MUTED_COLOR, fillOpacity: 0.18 });
                         });
                     }
+                    if (show) shownCodes.add(code); else shownCodes.delete(code);
                 });
                 document.querySelectorAll('.country-item').forEach(item => {
                     item.style.display = passesFilters(item.dataset.code, item.dataset.name) ? 'flex' : 'none';
                 });
                 refreshLabels2D();
-                if (animate && toReveal.length) {
-                    for (let i = toReveal.length - 1; i > 0; i--) {
+                if (animate && changes.length) {
+                    for (let i = changes.length - 1; i > 0; i--) {
                         const j = Math.floor(Math.random() * (i + 1));
-                        [toReveal[i], toReveal[j]] = [toReveal[j], toReveal[i]];
+                        [changes[i], changes[j]] = [changes[j], changes[i]];
                     }
-                    const step = REVEAL_MS / toReveal.length;
-                    toReveal.forEach((entry, idx) => {
+                    const step = durationMs / changes.length;
+                    changes.forEach((entry, idx) => {
                         setTimeout(() => {
-                            entry.layers.forEach(layer => layer.setStyle({
-                                fillColor: entry.isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65
-                            }));
+                            entry.layers.forEach(layer => layer.setStyle(entry.toShow
+                                ? { fillColor: entry.isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
+                                : { fillColor: MUTED_COLOR, fillOpacity: 0.18 }));
                         }, idx * step);
                     });
                 }
@@ -1892,13 +1899,20 @@ ${bodyHtml}
             }
             window._applyFilters = applyFilters;
 
-            // Rebuilds each country's tooltip as permanent (a visible
-            // label) or hover-only, based on the "Show country names"
-            // toggle combined with the current search/color mode.
+            // Rebuilds each country's tooltip as permanent (a pinned-open
+            // label) or hover-only. Permanent now means: it was clicked
+            // (see onEachCountry - only wired for un-owned countries; an
+            // owned one opens its modal instead, which already shows the
+            // name), or it's currently matching an active search. There's
+            // no more manual "Show names" toggle - hover already works for
+            // any country via the tooltip binding below regardless.
             function refreshLabels2D() {
+                const query = searchBox.value.trim();
+                const isSearching = query !== '';
                 Object.entries(countryLayers).forEach(([code, layers]) => {
                     const name = COUNTRY_NAME_LOOKUP[code] || code;
-                    const shouldShow = showNamesEnabled && passesFilters(code, name);
+                    const shouldShow = clickedLabelCodes.has(code) ||
+                        (isSearching && matchesQuery(code, name, query.toLowerCase()));
                     layers.forEach(layer => {
                         if (layer.getTooltip()) layer.unbindTooltip();
                         // className is applied either way so hover-only tooltips get the
@@ -1907,12 +1921,7 @@ ${bodyHtml}
                     });
                 });
             }
-
-            document.getElementById('toggle-names-btn').onclick = () => {
-                showNamesEnabled = !showNamesEnabled;
-                document.getElementById('toggle-names-btn').classList.toggle('active', showNamesEnabled);
-                refreshLabels2D();
-            };
+            window._refreshLabels2D = refreshLabels2D;
 
             function focusOnMatches(matched) {
                 if (matched.length === 0 || !leafletMap) return;
@@ -1959,12 +1968,13 @@ ${bodyHtml}
                 const idx = COLOR_MODES.findIndex(m => m.key === colorMode);
                 colorMode = COLOR_MODES[(idx + 1) % COLOR_MODES.length].key;
                 renderColorModeButton();
-                applyFilters();
+                applyFilters({ animate: true, durationMs: TRANSITION_MS });
             };
             renderColorModeButton();
 
             document.getElementById('reset-btn').onclick = () => {
                 searchBox.value = ''; searchGhost.value = '';
+                clickedLabelCodes.clear(); // any manually-pinned names go back to hover-only too
                 colorMode = 'both';
                 renderColorModeButton();
                 applyFilters({ animate: true });
@@ -2147,6 +2157,16 @@ ${bodyHtml}
                     layer.on('click', () => openModal(code));
                     layer.on('mouseover', function() { if (window._passesFilters(code, name)) this.setStyle({ fillOpacity: 0.9 }); });
                     layer.on('mouseout', function() { if (window._passesFilters(code, name)) this.setStyle({ fillOpacity: 0.65 }); });
+                } else {
+                    // No collection here, so there's no modal to open on
+                    // click - instead, clicking pins the name label on
+                    // (click again to unpin), the mobile-friendly
+                    // equivalent of hovering.
+                    layer.on('click', () => {
+                        if (clickedLabelCodes.has(code)) clickedLabelCodes.delete(code);
+                        else clickedLabelCodes.add(code);
+                        window._refreshLabels2D();
+                    });
                 }
             }
 
