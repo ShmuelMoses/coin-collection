@@ -144,13 +144,10 @@
         #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
         #map { height: 100%; width: 100%; background: var(--map-bg); }
-        /* Decorative antique-map dressing (compass rose + torn-parchment frame)
-           is added as real Leaflet layers anchored to lat/lng in initMap(), so
-           it pans AND zooms together with the map like part of the paper
-           itself - see buildTornFrame() and the L.svgOverlay call in JS. The
-           compass rose is an SVG overlay (not a fixed-pixel marker/divIcon)
-           specifically so it scales with the map instead of staying a
-           constant screen size while zooming. */
+        /* Decorative antique-map compass rose is added as a real Leaflet
+           SVG overlay layer anchored to lat/lng in initMap() (not a
+           fixed-pixel marker/divIcon), specifically so it scales with the
+           map instead of staying a constant screen size while zooming. */
         .compass-rose-overlay { color: var(--text); opacity: 0.6; pointer-events: none; }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
@@ -228,7 +225,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.2</div>
+        <div class="app-version">v1.3</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -251,7 +248,7 @@
                 <input type="text" id="search-box" placeholder="Search" autocomplete="off">
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v1.2</div>
+            <div id="app-version">v1.3</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
@@ -1737,46 +1734,6 @@ ${bodyHtml}
             <text x="-4" y="100" text-anchor="middle" dominant-baseline="central" font-size="22" font-family="Georgia, 'Times New Roman', serif" font-style="italic" fill="currentColor" opacity="0.9">W</text>
         </svg>`;
 
-        function seededRandom(seed) {
-            let s = seed % 2147483647;
-            if (s <= 0) s += 2147483646;
-            return function() {
-                s = (s * 16807) % 2147483647;
-                return (s - 1) / 2147483646;
-            };
-        }
-
-        // Builds a hand-torn-parchment-edge outline as a closed lat/lng loop:
-        // a rectangle whose four sides are jittered along their perpendicular
-        // axis (seeded, so the shape is stable across reloads) so the border
-        // reads as the deckled edge of an old paper map instead of a ruled
-        // rectangle. Kept well clear of the poles: Leaflet's default
-        // projection can't represent latitude +/-90, and a frame that reached
-        // that far used to draw a stray straight line across the whole width
-        // of the map right through the Arctic and Antarctica.
-        function buildTornFrame(latMin, latMax, lonMin, lonMax, jitterLat, jitterLon, segsPerSide, seed) {
-            const rand = seededRandom(seed);
-            const j = (amt) => (rand() - 0.5) * 2 * amt;
-            const pts = [];
-            for (let i = 0; i <= segsPerSide; i++) {
-                const t = i / segsPerSide;
-                pts.push([latMax + j(jitterLat), lonMin + (lonMax - lonMin) * t]);
-            }
-            for (let i = 1; i <= segsPerSide; i++) {
-                const t = i / segsPerSide;
-                pts.push([latMax - (latMax - latMin) * t, lonMax + j(jitterLon)]);
-            }
-            for (let i = 1; i <= segsPerSide; i++) {
-                const t = i / segsPerSide;
-                pts.push([latMin + j(jitterLat), lonMax - (lonMax - lonMin) * t]);
-            }
-            for (let i = 1; i <= segsPerSide; i++) {
-                const t = i / segsPerSide;
-                pts.push([latMin + (latMax - latMin) * t, lonMin + j(jitterLon)]);
-            }
-            return pts;
-        }
-
         async function initMap() {
             countryLayers = {};
             COUNTRY_NAME_LOOKUP = {};
@@ -1818,19 +1775,11 @@ ${bodyHtml}
             }).addTo(leafletMap);
 
             // Antique-map dressing, anchored in map space (lat/lng), not
-            // screen space, so both pan and zoom together with the map:
-            // - a double torn-parchment-edge frame near the world's edge
-            //   (kept well short of the poles - see buildTornFrame's comment)
-            // - a compass rose sitting in open ocean west of South America,
-            //   as a real SVG overlay so it scales with the map
-            const outerFrame = buildTornFrame(-78, 80, -168, 190, 1.6, 2.4, 48, 101);
-            const innerFrame = buildTornFrame(-74, 76, -164, 186, 1.3, 2.0, 48, 202);
-            L.polygon(outerFrame, {
-                interactive: false, fill: false, color: BORDER_COLOR, weight: 2.2, opacity: 0.65, lineJoin: 'round'
-            }).addTo(leafletMap);
-            L.polygon(innerFrame, {
-                interactive: false, fill: false, color: BORDER_COLOR, weight: 1, opacity: 0.4, lineJoin: 'round'
-            }).addTo(leafletMap);
+            // screen space, so it pans and zooms together with the map:
+            // a compass rose sitting in open ocean west of South America,
+            // as a real SVG overlay so it scales with the map. (The
+            // decorative frame that used to be drawn here was removed -
+            // it didn't read well as an antique map border.)
             const compassSvgEl = new DOMParser().parseFromString(COMPASS_ROSE_SVG, 'image/svg+xml').documentElement;
             L.svgOverlay(compassSvgEl, [[-30, -110], [-10, -90]], {
                 interactive: false, className: 'compass-rose-overlay'
