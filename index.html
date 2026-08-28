@@ -71,8 +71,8 @@
             width: auto; margin: 0; padding: 4px 8px; background: transparent;
             border: 1px solid transparent; color: var(--text-dim); font-size: 15px; border-radius: 6px;
         }
-        .delete-collection-btn:hover { background: rgba(255,255,255,0.08); color: #94a3b8; }
-        #status { font-size: 13px; color: #94a3b8; margin-top: 16px; }
+        .delete-collection-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-dim); }
+        #status { font-size: 13px; color: var(--text-dim); margin-top: 16px; }
 
         /* ===== Collection view (map/list/search/modal) ===== */
         #collection-view { display: flex; height: 100vh; width: 100vw; position: fixed; top:0; left:0; }
@@ -218,7 +218,7 @@
             padding: 12px 16px; margin-bottom: 10px; cursor: pointer; display: flex;
             justify-content: space-between; align-items: center; color: var(--text);
         }
-        .country-item:hover { background: rgba(34,211,238,0.15); border-color: var(--accent-owned); }
+        .country-item:hover { background: rgba(75,107,58,0.15); border-color: var(--accent-owned); }
         .country-item .count { color: var(--accent-owned); font-weight: bold; }
         #modal-backdrop { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: transparent; z-index: 1000; }
         #modal {
@@ -287,14 +287,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.10</div>
+        <div class="app-version">2.01</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">v1.10</div>
+            <div id="app-version" title="Thumbnail cache info">2.01</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -487,10 +487,13 @@
             try {
                 const index = await getDriveThumbIndex();
                 const ids = [...index.values()].map(v => v.id);
-                for (const id of ids) {
-                    try { await gapi.client.drive.files.delete({ fileId: id }); }
-                    catch (err) { console.warn('Could not delete cached thumbnail', id, err); }
-                }
+                // Deletes are independent Drive API calls, so fire them all at once
+                // instead of awaiting one full round-trip per thumbnail in sequence
+                // (previously this could take minutes for a large cache).
+                await Promise.all(ids.map(id =>
+                    gapi.client.drive.files.delete({ fileId: id })
+                        .catch(err => console.warn('Could not delete cached thumbnail', id, err))
+                ));
                 driveThumbIndexPromise = null; // force a fresh rebuild next time anything needs it
                 await setMeta(THUMB_META_KEY, { entries: [], lastSyncTime: null });
                 statsEl.textContent = 'Cache cleared.';
@@ -547,7 +550,7 @@
             setStatus('');
 
             if (collections.length === 0) {
-                contentEl.innerHTML = `<p style="font-size:14px;color:#94a3b8;">You don't have any collections yet.</p>`;
+                contentEl.innerHTML = `<p style="font-size:14px;color:var(--text-dim);">You don't have any collections yet.</p>`;
                 const btn = document.createElement('button');
                 btn.className = 'primary-btn';
                 btn.textContent = '+ Create your first collection';
@@ -1699,6 +1702,19 @@
             btn.style.opacity = '0.4';
             btn.style.pointerEvents = 'none';
 
+            // Fetch/resize/encode every selected image up front, in parallel
+            // (previously this ran one full Drive round-trip + resize at a time
+            // inside the loop below, so sharing N images meant N sequential waits).
+            const dataUrlById = {};
+            await Promise.all(
+                orderedGroups.flatMap(g => g.images.filter(img => selectedForShare.has(img.id)))
+                    .map(async img => {
+                        const fullBlob = await fetchFullImageBlob(img.id);
+                        const smallBlob = await resizeImageBlobByFactor(fullBlob, 4); // 1/4 resolution
+                        dataUrlById[img.id] = await blobToBase64(smallBlob);
+                    })
+            );
+
             let bodyHtml = '';
             for (const group of orderedGroups) {
                 const groupSelected = group.images.filter(img => selectedForShare.has(img.id));
@@ -1706,10 +1722,7 @@
                 if (group.heading) bodyHtml += `<h3>${group.heading}</h3>`;
                 bodyHtml += '<div class="grid">';
                 for (const img of groupSelected) {
-                    const fullBlob = await fetchFullImageBlob(img.id);
-                    const smallBlob = await resizeImageBlobByFactor(fullBlob, 4); // 1/4 resolution
-                    const dataUrl = await blobToBase64(smallBlob);
-                    bodyHtml += `<img src="${dataUrl}">`;
+                    bodyHtml += `<img src="${dataUrlById[img.id]}">`;
                 }
                 bodyHtml += '</div>';
             }
@@ -1765,7 +1778,17 @@ ${bodyHtml}
                 return a.name.localeCompare(b.name);
             });
 
-            const totalItems = entries.reduce((sum, e) => sum + e.count, 0);
+            // A banknote shared across multiple countries (via the shared-currency
+            // merge in fetchCollectionData) carries the same Drive file id in every
+            // country's image list, so summing e.count would count it once per
+            // country. The total "items" figure should count each physical note
+            // once; per-country counts (e.count, shown per row/modal) are left as-is.
+            const uniqueImageIds = new Set();
+            Object.values(cvCountryMap).forEach(entry => {
+                entry.own.forEach(img => uniqueImageIds.add(img.id));
+                Object.values(entry.historical).forEach(imgs => imgs.forEach(img => uniqueImageIds.add(img.id)));
+            });
+            const totalItems = uniqueImageIds.size;
             const ownedCount = entries.filter(e => e.owned).length;
             const worldCount = entries.length;
             const pct = worldCount ? Math.round((ownedCount / worldCount) * 100) : 0;
@@ -2340,7 +2363,7 @@ ${bodyHtml}
                 await showCollectionView(col, countries);
             } catch (err) {
                 console.error(err);
-                contentEl.innerHTML = `<p style="color:#f43f5e;">Error: ${err.message || JSON.stringify(err)}</p>`;
+                contentEl.innerHTML = `<p style="color:var(--accent-none);">Error: ${err.message || JSON.stringify(err)}</p>`;
             }
         }
     </script>
