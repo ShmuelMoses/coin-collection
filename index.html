@@ -20,6 +20,22 @@
             --text: #e2e8f0;
             --text-dim: rgba(226,232,240,0.55);
             --border: rgba(226,232,240,0.15);
+            --map-bg: #0b1526;
+        }
+        /* Antique/old-map theme - swaps the same custom properties used
+           throughout the collection view, so no other CSS needs to change.
+           Toggled via the lightning/scroll button (#theme-toggle-btn). */
+        body.theme-antique {
+            --bg-solid: #ece2c8;
+            --bg-translucent: rgba(236, 226, 200, 0.88);
+            --panel-alt: #ddcda3;
+            --accent-owned: #4b6b3a;
+            --accent-none: #a13d2b;
+            --muted: #a89a78;
+            --text: #3b2a1a;
+            --text-dim: rgba(59,42,26,0.55);
+            --border: rgba(59,42,26,0.25);
+            --map-bg: #e3d5ae;
         }
         body {
             font-family: Arial, sans-serif;
@@ -94,11 +110,11 @@
                 padding: 8px 10px;
             }
             #cv-title { font-size: 14px; margin: 0 8px 0 0; flex-shrink: 0; }
-            .view-toggle { margin-bottom: 0; flex-shrink: 0; width: auto; }
-            .view-toggle button { padding: 6px 10px; font-size: 12px; }
+            #icon-row { margin-bottom: 0; gap: 6px; }
+            .icon-btn { width: 30px; height: 30px; font-size: 14px; }
             .search-wrap { margin-bottom: 0; flex: 1 1 140px; min-width: 100px; }
             #search-box, #search-ghost { font-size: 12px; padding: 6px 8px; }
-            #map-only-controls { display: none !important; } /* Reset view - map-only, redundant with pinch/drag on touch */
+            #map-only-controls { display: none !important; } /* Show country names - map-only, low priority on a small screen */
             .legend-btn { font-size: 11px; padding: 6px 8px; margin-bottom: 0; width: auto; }
             #back-btn { font-size: 11px; padding: 6px 8px; width: auto; margin-top: 0; }
             .box { max-width: 92vw; padding: 24px 20px; }
@@ -120,13 +136,16 @@
         }
         .legend-btn.active { border-color: currentColor; background: rgba(255,255,255,0.08); }
         .legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-        #reset-btn {
-            width: 100%; margin-top: 6px; padding: 7px 10px; border-radius: 6px; border: 1px solid var(--border);
-            background: transparent; color: var(--text-dim); cursor: pointer; font-size: 13px;
+        #icon-row { display: flex; gap: 8px; margin-bottom: 16px; }
+        .icon-btn {
+            width: 34px; height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+            background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+            cursor: pointer; padding: 0; font-size: 16px; line-height: 1;
         }
+        .icon-btn:hover { border-color: var(--accent-owned); }
         #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
-        #map { height: 100%; width: 100%; background: #0b1526; }
+        #map { height: 100%; width: 100%; background: var(--map-bg); }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
             color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
@@ -197,28 +216,33 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.7</div>
+        <div class="app-version">v0.8</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <button id="view-toggle-btn" class="legend-btn">&#128506; Map</button>
+            <div id="icon-row">
+                <button id="view-toggle-btn" class="icon-btn" title="Switch to List view"></button>
+                <button id="color-mode-btn" class="icon-btn" title="Coloring: Have items + None yet">
+                    <span class="legend-dot" id="color-mode-dot" style="background:linear-gradient(90deg, var(--accent-owned), var(--accent-none));"></span>
+                    <span id="color-mode-label" style="display:none;"></span>
+                </button>
+                <button id="theme-toggle-btn" class="icon-btn" title="Switch to antique theme">&#9889;</button>
+                <button id="reset-btn" class="icon-btn" title="Reset view">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+                </button>
+            </div>
             <div class="search-wrap">
                 <input type="text" id="search-ghost" tabindex="-1" disabled>
                 <input type="text" id="search-box" placeholder="Search country" autocomplete="off">
             </div>
-            <button id="color-mode-btn" class="legend-btn">
-                <span class="legend-dot" id="color-mode-dot" style="background:var(--muted);"></span>
-                <span id="color-mode-label">Coloring: Off</span>
-            </button>
             <div id="map-only-controls">
                 <button id="toggle-names-btn" class="legend-btn">&#127760; Show country names</button>
-                <button id="reset-btn">&#8634; Reset view</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.7</div>
+            <div id="app-version">v0.8</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
@@ -652,9 +676,47 @@
         // ============================================================
         // Collection view: map + list + search + modal
         // ============================================================
-        const OWNED_COLOR = '#22d3ee';
-        const NONE_COLOR = '#f43f5e';
-        const MUTED_COLOR = '#475569';
+        // Theme palettes: futuristic (default dark) and antique (parchment).
+        // Leaflet draws layer colors via JS, not pure CSS, so switching
+        // themes has to update both the CSS custom properties (the
+        // body.theme-antique block in <style>) AND these JS-side color
+        // variables, then restyle any country layers already on the map.
+        const THEMES = {
+            futuristic: { owned: '#22d3ee', none: '#f43f5e', muted: '#475569', border: 'rgba(226,232,240,0.35)' },
+            antique: { owned: '#4b6b3a', none: '#a13d2b', muted: '#a89a78', border: 'rgba(59,42,26,0.45)' },
+        };
+        let currentTheme = 'futuristic'; // 'futuristic' | 'antique'
+        let OWNED_COLOR = THEMES.futuristic.owned;
+        let NONE_COLOR = THEMES.futuristic.none;
+        let MUTED_COLOR = THEMES.futuristic.muted;
+        let BORDER_COLOR = THEMES.futuristic.border;
+
+        function applyTheme(themeName) {
+            currentTheme = themeName;
+            document.body.classList.toggle('theme-antique', themeName === 'antique');
+            const t = THEMES[themeName];
+            OWNED_COLOR = t.owned; NONE_COLOR = t.none; MUTED_COLOR = t.muted; BORDER_COLOR = t.border;
+            // Re-style already-drawn country borders, then re-run the
+            // existing owned/none/muted fill-color logic for the new theme.
+            Object.values(countryLayers).forEach(layers => layers.forEach(layer => layer.setStyle({ color: BORDER_COLOR })));
+            if (window._applyFilters) window._applyFilters();
+            renderThemeToggleButton();
+        }
+
+        function renderThemeToggleButton() {
+            const btn = document.getElementById('theme-toggle-btn');
+            if (!btn) return;
+            if (currentTheme === 'futuristic') {
+                btn.innerHTML = '&#9889;'; // lightning - click switches to antique
+                btn.title = 'Switch to antique theme';
+            } else {
+                btn.innerHTML = '&#128220;'; // scroll - click switches to futuristic
+                btn.title = 'Switch to futuristic theme';
+            }
+        }
+        document.getElementById('theme-toggle-btn').onclick = () => {
+            applyTheme(currentTheme === 'futuristic' ? 'antique' : 'futuristic');
+        };
 
         let cvCountries = [];       // raw [{code, images:[{id,name}]}] for the open collection
         let cvCountryMap = {};      // merged: {code: {own:[images], historical:{histCode:[images]}}}
@@ -662,7 +724,7 @@
         let countryLayers = {};
         let showNamesEnabled = false;
         let COUNTRY_NAME_LOOKUP = {};
-        let colorMode = 'neither'; // 'neither' | 'owned' | 'none' | 'both' - cycles via the color-mode button
+        let colorMode = 'both'; // 'owned' | 'none' | 'both' - cycles via the color-mode button ('neither'/Off was removed)
         let currentView = 'map';   // 'map' | 'list'
         let leafletMap = null;
 
@@ -716,7 +778,7 @@
         function goBackToCollections(fromPopstate) {
             if (leafletMap) { leafletMap.remove(); leafletMap = null; }
             currentView = 'map';
-            colorMode = 'neither';
+            colorMode = 'both';
             countryLayers = {};
             document.getElementById('collection-view').style.display = 'none';
             document.getElementById('login-box').style.display = 'block';
@@ -1326,6 +1388,9 @@ ${bodyHtml}
         }
 
         // ---------- View toggle, search, filters (unified logic) ----------
+        const MAP_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>';
+        const LIST_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
+
         function initCollectionViewUI() {
             const viewToggleBtn = document.getElementById('view-toggle-btn');
             const listDiv = document.getElementById('list-view');
@@ -1336,12 +1401,14 @@ ${bodyHtml}
                     mapDiv.style.display = 'block';
                     listDiv.style.display = 'none';
                     document.getElementById('map-only-controls').style.display = 'block';
-                    viewToggleBtn.innerHTML = '&#128506; Map'; // shows current mode; click switches to the other
+                    viewToggleBtn.innerHTML = MAP_ICON_SVG; // shows current mode icon; click switches to the other
+                    viewToggleBtn.title = 'Switch to List view';
                 } else {
                     mapDiv.style.display = 'none';
                     listDiv.style.display = 'block';
                     document.getElementById('map-only-controls').style.display = 'none';
-                    viewToggleBtn.innerHTML = '&#128203; List';
+                    viewToggleBtn.innerHTML = LIST_ICON_SVG;
+                    viewToggleBtn.title = 'Switch to Map view';
                 }
             }
             viewToggleBtn.onclick = () => {
@@ -1367,14 +1434,13 @@ ${bodyHtml}
                 searchGhost.value = suggestion ? typed + suggestion.slice(typed.length) : '';
             }
             // Category coloring only applies when NOT actively searching -
-            // that way search always works, even while colorMode is 'neither'.
+            // that way search always works regardless of the current colorMode.
             function passesFilters(code, name) {
                 const query = searchBox.value.trim().toLowerCase();
                 const searchOk = query === '' || matchesQuery(code, name, query);
                 if (!searchOk) return false;
                 if (query !== '') return true;
                 const isOwned = collectionData.hasOwnProperty(code);
-                if (colorMode === 'neither') return false;
                 if (colorMode === 'owned') return isOwned;
                 if (colorMode === 'none') return !isOwned;
                 return true; // 'both'
@@ -1450,17 +1516,20 @@ ${bodyHtml}
                 }
             };
 
-            // Single button cycling through 4 coloring modes
+            // Single button cycling through 3 coloring modes (the old
+            // "neither/Off" state was removed - default is now 'both', so
+            // the map always shows something on load, never all-grey).
             const COLOR_MODES = [
-                { key: 'neither', label: 'Coloring: Off', color: 'var(--muted)' },
-                { key: 'owned', label: 'Have items', color: 'var(--accent-owned)' },
-                { key: 'none', label: 'None yet', color: 'var(--accent-none)' },
-                { key: 'both', label: 'Have items + None yet', color: 'linear-gradient(90deg, var(--accent-owned), var(--accent-none))' },
+                { key: 'both', label: 'Coloring: Have items + None yet', color: 'linear-gradient(90deg, var(--accent-owned), var(--accent-none))' },
+                { key: 'owned', label: 'Coloring: Have items', color: 'var(--accent-owned)' },
+                { key: 'none', label: 'Coloring: None yet', color: 'var(--accent-none)' },
             ];
             function renderColorModeButton() {
                 const mode = COLOR_MODES.find(m => m.key === colorMode);
+                const btn = document.getElementById('color-mode-btn');
                 document.getElementById('color-mode-label').textContent = mode.label;
                 document.getElementById('color-mode-dot').style.background = mode.color;
+                btn.title = mode.label; // icon-only button now - full text lives in the tooltip
             }
             document.getElementById('color-mode-btn').onclick = () => {
                 const idx = COLOR_MODES.findIndex(m => m.key === colorMode);
@@ -1469,10 +1538,11 @@ ${bodyHtml}
                 applyFilters();
             };
             renderColorModeButton();
+            renderThemeToggleButton();
 
             document.getElementById('reset-btn').onclick = () => {
                 searchBox.value = ''; searchGhost.value = '';
-                colorMode = 'neither';
+                colorMode = 'both';
                 renderColorModeButton();
                 applyFilters();
                 if (leafletMap) leafletMap.setView([20, 10], 2);
@@ -1551,7 +1621,7 @@ ${bodyHtml}
             }
 
             L.geoJSON({ type: 'FeatureCollection', features }, {
-                style: { weight: 0.6, color: 'rgba(226,232,240,0.35)', fillColor: MUTED_COLOR, fillOpacity: 0.1 },
+                style: { weight: 0.6, color: BORDER_COLOR, fillColor: MUTED_COLOR, fillOpacity: 0.1 },
                 onEachFeature: onEachCountry
             }).addTo(leafletMap);
 
