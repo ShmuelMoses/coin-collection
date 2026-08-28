@@ -296,14 +296,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">2.02</div>
+        <div class="app-version">2.03</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">2.02</div>
+            <div id="app-version" title="Thumbnail cache info">2.03</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -1946,6 +1946,24 @@ ${bodyHtml}
                                 : { fillColor: MUTED_COLOR, fillOpacity: 0.18 }));
                         }, idx * step);
                     });
+                    // Settle pass: dozens of setStyle() calls land close together
+                    // across these staggered timeouts, and on slower devices
+                    // (seen on Android) Leaflet's canvas renderer can occasionally
+                    // drop one of them, leaving a country stuck in its pre-animation
+                    // color. shownCodes already holds the correct end state for
+                    // EVERY code (updated above, not just the ones that changed),
+                    // so once the animation's done, re-assert every layer's style
+                    // unconditionally - a cheap no-op when nothing was dropped, a
+                    // guaranteed fix when something was.
+                    setTimeout(() => {
+                        Object.entries(countryLayers).forEach(([code, layers]) => {
+                            const isOwned = collectionData.hasOwnProperty(code);
+                            const show = shownCodes.has(code);
+                            layers.forEach(layer => layer.setStyle(show
+                                ? { fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
+                                : { fillColor: MUTED_COLOR, fillOpacity: 0.18 }));
+                        });
+                    }, durationMs + 50);
                 }
                 return matched;
             }
@@ -2033,9 +2051,7 @@ ${bodyHtml}
                 // Fit to the map frame's own bounds (border + grid included,
                 // not just the country data) so Reset always shows the whole
                 // antique "map on parchment" the same way the initial load does.
-                if (leafletMap) {
-                    leafletMap.fitBounds(FRAME_BOUNDS, { padding: [10, 10] });
-                }
+                if (leafletMap) fitFrameToViewport();
             };
         }
 
@@ -2177,6 +2193,20 @@ ${bodyHtml}
             <text x="-4" y="100" text-anchor="middle" dominant-baseline="central" font-size="22" font-family="Georgia, 'Times New Roman', serif" font-style="italic" fill="currentColor" opacity="0.9">W</text>
         </svg>`;
 
+        // Zooms/pans so the whole map frame (border + grid, not just the
+        // country landmasses) fits on screen - used for both the initial
+        // load and the Reset view button. minZoom is recomputed from the
+        // ACTUAL viewport every time this runs (via getBoundsZoom), instead
+        // of relying on a fixed minZoom set once in the L.map() constructor
+        // - a fixed number tuned for a wide desktop window left Android's
+        // narrow/tall viewport unable to zoom out far enough to ever show
+        // the whole frame by default.
+        function fitFrameToViewport() {
+            const fitZoom = leafletMap.getBoundsZoom(FRAME_BOUNDS, false, L.point(10, 10));
+            leafletMap.setMinZoom(fitZoom);
+            leafletMap.fitBounds(FRAME_BOUNDS, { padding: [10, 10] });
+        }
+
         async function initMap() {
             countryLayers = {};
             COUNTRY_NAME_LOOKUP = {};
@@ -2190,7 +2220,6 @@ ${bodyHtml}
                 // straight through Russia (see countries.geojson prep notes).
                 maxBounds: [[-90, -169], [90, 191]],
                 maxBoundsViscosity: 1.0,
-                minZoom: 1,
                 zoomControl: false
             }).setView([20, 10], 2);
 
@@ -2232,7 +2261,19 @@ ${bodyHtml}
             // a ruled border + lat/long grid (see buildMapFrame), and a
             // compass rose sitting in open ocean west of South America as
             // a real SVG overlay so it scales with the map.
-            buildMapFrame().addTo(leafletMap);
+            const frameGroup = buildMapFrame().addTo(leafletMap);
+            // Explicitly ask every stripe/grid-line/border element to redraw
+            // itself right after being added. All these paths share one
+            // canvas (preferCanvas:true) with the country polygons, and on
+            // some devices (seen on Android) a path added to a canvas
+            // renderer can end up skipped on the very first paint - most
+            // often one of the grid lines, since they're thin (low weight)
+            // and easy to miss even when the rest of the frame looks fine.
+            // Path.redraw() is Leaflet's own public API for "repaint this
+            // element," which is more reliable here than hoping a general
+            // map-level repaint happens to cover it.
+            frameGroup.eachLayer(layer => layer.redraw());
+
             const compassSvgEl = new DOMParser().parseFromString(COMPASS_ROSE_SVG, 'image/svg+xml').documentElement;
             L.svgOverlay(compassSvgEl, COMPASS_BOUNDS, {
                 interactive: false, className: 'compass-rose-overlay'
@@ -2244,7 +2285,7 @@ ${bodyHtml}
             // Fit to the frame's own bounds (not just the country data) so
             // the whole antique "map on parchment" - border, grid and all -
             // is what you see by default, not just the landmasses.
-            leafletMap.fitBounds(FRAME_BOUNDS, { padding: [10, 10] });
+            fitFrameToViewport();
         }
 
         // ---------- Step 7: opening a collection ----------
