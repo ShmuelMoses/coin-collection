@@ -287,14 +287,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.9</div>
+        <div class="app-version">v1.10</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">v1.9</div>
+            <div id="app-version" title="Thumbnail cache info">v1.10</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -2214,12 +2214,26 @@ ${bodyHtml}
         const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
         async function readCurrencyGroups(rootFolderId) {
             try {
+                // Matches "multi_country_currencies" whether it's an
+                // extensionless upload, a "multi_country_currencies.txt"
+                // (e.g. if the file was downloaded from somewhere and
+                // uploaded as-is, extension and all), or a Google Doc -
+                // an exact name= match was too strict and would silently
+                // find nothing (and therefore silently skip the whole
+                // feature) over something as small as a leftover ".txt".
                 const listResp = await gapi.client.drive.files.list({
-                    q: `'${rootFolderId}' in parents and name='${MULTI_CURRENCY_CONFIG_FILENAME}' and trashed=false`,
+                    q: `'${rootFolderId}' in parents and name contains '${MULTI_CURRENCY_CONFIG_FILENAME}' and trashed=false`,
                     fields: 'files(id, name, mimeType)'
                 });
-                const file = (listResp.result.files || [])[0];
-                if (!file) return {};
+                const candidates = listResp.result.files || [];
+                // Prefer an exact name match if there happens to be more
+                // than one candidate; otherwise just take the first.
+                const file = candidates.find(f => f.name === MULTI_CURRENCY_CONFIG_FILENAME) || candidates[0];
+                if (!file) {
+                    console.log(`[currency config] no file matching "${MULTI_CURRENCY_CONFIG_FILENAME}" found in the collection's root folder - shared-currency merging is off for this collection.`);
+                    return {};
+                }
+                console.log(`[currency config] using "${file.name}" (${file.mimeType})`);
 
                 // A file typed straight into Drive as "New > Google Doc"
                 // needs export (alt=media only works on actual binary/text
@@ -2244,6 +2258,7 @@ ${bodyHtml}
                     const codes = line.slice(colonIdx + 1).split(',').map(c => c.trim().toUpperCase()).filter(Boolean);
                     if (currency && codes.length) groups[currency] = codes;
                 });
+                console.log('[currency config] parsed groups:', groups);
                 return groups;
             } catch (err) {
                 console.warn(`Could not read ${MULTI_CURRENCY_CONFIG_FILENAME} config:`, err);
@@ -2288,7 +2303,12 @@ ${bodyHtml}
 
             Object.entries(currencyGroups).forEach(([currency, codes]) => {
                 const sharedImages = imagesByFolderName[currency] || [];
-                if (!sharedImages.length) return;
+                if (!sharedImages.length) {
+                    console.log(`[currency config] "${currency}" group (${codes.join(', ')}) has no matching folder ` +
+                        `(or an empty one) among: ${folders.map(f => f.name).join(', ') || '(no folders at all)'} - skipped.`);
+                    return;
+                }
+                console.log(`[currency config] "${currency}": folding ${sharedImages.length} shared image(s) into ${codes.length} countries.`);
                 codes.forEach(code => {
                     let entry = countryByCode[code];
                     if (!entry) {
