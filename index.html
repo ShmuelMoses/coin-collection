@@ -144,23 +144,11 @@
         #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
         #map { height: 100%; width: 100%; background: var(--map-bg); }
-        /* Decorative antique-map dressing - both sit on top of the map,
-           ignore clicks/drags (pointer-events:none) so they never interfere
-           with panning/zooming or clicking a country underneath. */
-        #map-frame {
-            position: absolute; inset: 0; pointer-events: none; z-index: 450;
-            border: 14px solid var(--bg-solid);
-            box-shadow: inset 0 0 0 3px var(--text-dim), inset 0 0 24px 8px rgba(0,0,0,0.22);
-        }
-        #compass-rose {
-            position: absolute; left: 34px; bottom: 34px; z-index: 451;
-            color: var(--text); opacity: 0.55; pointer-events: none;
-        }
-        @media (max-width: 700px) {
-            #map-frame { border-width: 8px; }
-            #compass-rose { width: 56px; height: 56px; left: 14px; bottom: 14px; }
-            #compass-rose svg { width: 56px; height: 56px; }
-        }
+        /* Decorative antique-map dressing (compass rose + frame rectangle) is
+           added as real Leaflet layers anchored to lat/lng in initMap(), so it
+           pans and zooms together with the map like part of the paper itself -
+           see the compass-rose-icon rule below and the L.rectangle in JS. */
+        .compass-rose-icon { color: var(--text); opacity: 0.55; pointer-events: none; }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
             color: var(--text); text-shadow: 0 0 3px var(--label-halo), 0 0 3px var(--label-halo);
@@ -189,33 +177,29 @@
             border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 4px 30px rgba(0,0,0,0.6);
             z-index: 1001; padding: 20px;
         }
-        #modal h2 { margin: 0; color: var(--accent-owned); line-height: 1; }
+        #modal h2 { margin: 0; color: var(--accent-owned); line-height: 1.2; }
         #modal-header {
-            position: relative; text-align: center; padding: 0 42px; margin-bottom: 18px;
+            display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+            gap: 6px; margin-bottom: 18px;
         }
+        #modal-header h2 { text-align: center; white-space: nowrap; }
+        .modal-header-side { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+        .modal-header-left { justify-content: flex-start; }
+        .modal-header-right { justify-content: flex-end; }
         #share-icon-btn, #share-confirm-icon-btn, #share-cancel-icon-btn,
         #organize-icon-btn, #organize-confirm-icon-btn, #organize-cancel-icon-btn {
-            position: absolute; top: 50%; transform: translateY(-50%);
-            width: auto; padding: 0; background: transparent; border: none;
+            width: auto; padding: 0; margin: 0; background: transparent; border: none;
             color: var(--accent-owned); cursor: pointer; display: flex; align-items: center;
         }
-        #share-icon-btn { right: 0; }
-        #share-confirm-icon-btn { right: 0; }
-        #share-cancel-icon-btn { right: 34px; color: var(--accent-none); }
-        #organize-icon-btn { left: 0; color: var(--text-dim); }
-        #organize-confirm-icon-btn { left: 0; }
-        #organize-cancel-icon-btn { left: 34px; color: var(--accent-none); }
+        #share-cancel-icon-btn, #organize-cancel-icon-btn { color: var(--accent-none); }
+        #organize-icon-btn { color: var(--text-dim); }
         #share-icon-btn:hover, #share-confirm-icon-btn:hover,
         #organize-icon-btn:hover, #organize-confirm-icon-btn:hover { opacity: 0.75; }
-        .share-checkbox {
-            position: absolute; top: 6px; left: 6px; width: 18px; height: 18px;
-            accent-color: var(--accent-owned); cursor: pointer; display: none;
-        }
         #modal-images { display: block; }
         #modal-images img {
             width: 130px; height: 130px; object-fit: contain; background: rgba(255,255,255,0.06);
             border-radius: 6px; border: 1px solid var(--border); cursor: pointer; padding: 4px;
-            display: block;
+            display: block; transition: opacity 0.15s ease;
         }
         /* Shown over a thumbnail while its image is still downloading -
            Drive has to serve the full-res file first (see fetchFullImageBlob),
@@ -241,7 +225,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.10</div>
+        <div class="app-version">v1.1</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -264,45 +248,42 @@
                 <input type="text" id="search-box" placeholder="Search" autocomplete="off">
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.10</div>
+            <div id="app-version">v1.1</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
-            <div id="map-frame"></div>
-            <div id="compass-rose">
-                <svg viewBox="0 0 100 100" width="90" height="90" aria-hidden="true">
-                    <circle cx="50" cy="50" r="47" fill="none" stroke="currentColor" stroke-width="0.7" opacity="0.55"/>
-                    <circle cx="50" cy="50" r="38" fill="none" stroke="currentColor" stroke-width="0.5" opacity="0.4"/>
-                    <polygon points="71.2,28.8 58.0,50.0 71.2,71.2 50.0,58.0 28.8,71.2 42.0,50.0 28.8,28.8 50.0,42.0" fill="currentColor" opacity="0.35"/>
-                    <polygon points="50.0,4.0 57.8,42.2 96.0,50.0 57.8,57.8 50.0,96.0 42.2,57.8 4.0,50.0 42.2,42.2" fill="currentColor" opacity="0.65"/>
-                    <circle cx="50" cy="50" r="3.5" fill="currentColor" opacity="0.8"/>
-                    <text x="50" y="14" text-anchor="middle" font-size="9" font-family="Georgia, serif" fill="currentColor" opacity="0.85">N</text>
-                </svg>
-            </div>
             <div id="list-view"></div>
         </div>
         <div id="modal-backdrop"></div>
         <div id="modal">
             <div id="modal-header">
-                <button id="organize-icon-btn" title="Organize into categories">
-                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                </button>
-                <button id="organize-confirm-icon-btn" title="Save changes" style="display:none;">
-                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
-                </button>
-                <button id="organize-cancel-icon-btn" title="Discard changes" style="display:none;">
-                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
-                </button>
+                <div class="modal-header-side modal-header-left">
+                    <button id="organize-icon-btn" title="Organize into categories">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                    </button>
+                    <button id="organize-confirm-icon-btn" title="Save changes" style="display:none;">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
+                    </button>
+                    <button id="organize-cancel-icon-btn" title="Discard changes" style="display:none;">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+                    </button>
+                </div>
                 <h2 id="modal-title"></h2>
-                <button id="share-icon-btn" title="Share this country">
-                    <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z"/></svg>
-                </button>
-                <button id="share-confirm-icon-btn" title="Share selected" style="display:none;">
-                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
-                </button>
-                <button id="share-cancel-icon-btn" title="Cancel" style="display:none;">
-                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
-                </button>
+                <div class="modal-header-side modal-header-right">
+                    <button id="share-cancel-icon-btn" title="Cancel" style="display:none;">
+                        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
+                    </button>
+                    <button id="share-icon-btn" title="Share this country">
+                        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M2 8c1.8 2.2 3.6 2.2 5-0.3 1 2.3 3 3 5-0.2 1.2 2.1 3.3 2.6 6.5 1.2"/>
+                            <rect x="9" y="12.5" width="8" height="5.5" rx="0.6"/>
+                            <path d="M9 12.5l4 3.3 4-3.3"/>
+                        </svg>
+                    </button>
+                    <button id="share-confirm-icon-btn" title="Share selected" style="display:none;">
+                        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
+                    </button>
+                </div>
             </div>
             <div id="modal-images"></div>
         </div>
@@ -442,11 +423,11 @@
             collections.forEach((col, idx) => {
                 const item = document.createElement('div');
                 item.className = 'collection-item';
+                item.onclick = () => openCollection(col);
 
                 const nameSpan = document.createElement('span');
                 nameSpan.textContent = col.name;
                 nameSpan.style.flex = '1';
-                nameSpan.onclick = () => openCollection(col);
                 item.appendChild(nameSpan);
 
                 const delBtn = document.createElement('button');
@@ -621,14 +602,120 @@
             });
         }
 
+        // ---------- Server-side ("real") thumbnail cache, stored in this
+        // app's private Drive appData space -----------------------------
+        // The IndexedDB cache above only helps on repeat views from the
+        // SAME browser. The first time any photo is viewed anywhere, its
+        // thumbnail still has to be produced by downloading the full-res
+        // original and shrinking it locally - which is what was slow.
+        // To fix that for good, once a thumbnail has been generated we
+        // also upload the small JPEG to Drive (in the app's hidden appData
+        // folder, alongside layouts.json), named "<fileId>_thumb.jpg". On
+        // every later view - from any device, any browser - we check for
+        // that small file first and fetch it directly instead of the
+        // full-size photo.
+        //
+        // Note: this uses appDataFolder rather than a folder inside each
+        // country's own Drive folder. appData is private to this app and
+        // already covered by the existing drive.appdata permission (the
+        // same one layouts.json already uses), so no extra Google
+        // permission / re-login is required and there's no risk of a
+        // thumbnail file being mistaken for one of your photos.
+        let driveThumbIndexPromise = null;
+        function getDriveThumbIndex() {
+            if (driveThumbIndexPromise) return driveThumbIndexPromise;
+            driveThumbIndexPromise = (async () => {
+                const index = new Map(); // "<fileId>_thumb.jpg" -> Drive fileId of the cached thumb
+                let pageToken;
+                do {
+                    const resp = await gapi.client.drive.files.list({
+                        spaces: 'appDataFolder',
+                        q: "name contains '_thumb.jpg' and trashed=false",
+                        fields: 'nextPageToken, files(id, name)',
+                        pageSize: 1000,
+                        pageToken
+                    });
+                    (resp.result.files || []).forEach(f => index.set(f.name, f.id));
+                    pageToken = resp.result.nextPageToken;
+                } while (pageToken);
+                return index;
+            })();
+            return driveThumbIndexPromise;
+        }
+
+        async function fetchDriveThumbBlob(driveThumbId) {
+            const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${driveThumbId}?alt=media`, {
+                headers: { Authorization: 'Bearer ' + accessToken }
+            });
+            if (!resp.ok) throw new Error(`Drive returned ${resp.status} fetching cached thumbnail ${driveThumbId}`);
+            return resp.blob();
+        }
+
+        async function blobToBase64(blob) {
+            const buf = await blob.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = '';
+            const chunkSize = 0x8000; // avoid blowing the call stack on String.fromCharCode.apply
+            for (let i = 0; i < bytes.length; i += chunkSize) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+            }
+            return btoa(binary);
+        }
+
+        const thumbUploadsInFlight = new Set();
+        // Fire-and-forget: never blocks or breaks thumbnail display if it fails
+        // (offline, quota, etc.) - it's purely a "make next time faster" step.
+        async function uploadThumbnailToDrive(fileId, thumbBlob) {
+            const thumbName = fileId + '_thumb.jpg';
+            if (thumbUploadsInFlight.has(thumbName)) return;
+            thumbUploadsInFlight.add(thumbName);
+            try {
+                const index = await getDriveThumbIndex();
+                if (index.has(thumbName)) return; // already cached (e.g. by another tab/device)
+                const base64Data = await blobToBase64(thumbBlob);
+                const boundary = '-------314159265358979323846';
+                const metadata = { name: thumbName, mimeType: 'image/jpeg', parents: ['appDataFolder'] };
+                const multipartBody =
+                    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+                    `--${boundary}\r\nContent-Type: image/jpeg\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Data}\r\n--${boundary}--`;
+                const resp = await gapi.client.request({
+                    path: '/upload/drive/v3/files?uploadType=multipart',
+                    method: 'POST',
+                    headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+                    body: multipartBody
+                });
+                index.set(thumbName, resp.result.id);
+            } catch (err) {
+                console.warn('Could not cache thumbnail to Drive for', fileId, ':', err);
+            } finally {
+                thumbUploadsInFlight.delete(thumbName);
+            }
+        }
+
         async function getThumbnailBlobUrl(fileId) {
             const cacheKey = fileId + '_thumb';
             const cached = await cacheGet(cacheKey);
             if (cached) return URL.createObjectURL(cached);
 
+            // Check the Drive-side cache before falling back to a full download -
+            // a thumbnail generated during any earlier view (this device or
+            // another) will already be there.
+            try {
+                const index = await getDriveThumbIndex();
+                const driveThumbId = index.get(fileId + '_thumb.jpg');
+                if (driveThumbId) {
+                    const thumbBlob = await fetchDriveThumbBlob(driveThumbId);
+                    await cacheSet(cacheKey, thumbBlob);
+                    return URL.createObjectURL(thumbBlob);
+                }
+            } catch (err) {
+                console.warn('Drive thumbnail lookup failed for', fileId, '- falling back to full image:', err);
+            }
+
             const fullBlob = await fetchFullImageBlob(fileId);
             const thumbBlob = await resizeImageBlob(fullBlob, 220);
             await cacheSet(cacheKey, thumbBlob);
+            uploadThumbnailToDrive(fileId, thumbBlob); // don't await - happens in the background
             return URL.createObjectURL(thumbBlob);
         }
 
@@ -876,12 +963,12 @@
             document.getElementById('organize-icon-btn').style.display = showOrganizeIcon ? 'flex' : 'none';
             document.getElementById('organize-confirm-icon-btn').style.display = organizeMode ? 'flex' : 'none';
             document.getElementById('organize-cancel-icon-btn').style.display = organizeMode ? 'flex' : 'none';
-            document.querySelectorAll('.share-checkbox').forEach(cb => { cb.style.display = shareSelectMode ? 'block' : 'none'; });
         }
 
         function setShareSelectMode(on) {
             shareSelectMode = on;
             updateHeaderIcons();
+            renderModalContent(currentModalCode);
         }
 
         document.getElementById('share-icon-btn').onclick = () => setShareSelectMode(true);
@@ -926,23 +1013,24 @@
                 wrapper.appendChild(spinner);
 
                 const el = document.createElement('img');
-                el.onclick = () => { if (!shareSelectMode) showEnlarged(img.id); };
+                const refreshSelectedLook = () => {
+                    const isSelected = selectedForShare.has(img.id);
+                    el.style.opacity = (shareSelectMode && !isSelected) ? '0.3' : '1';
+                };
+                el.onclick = () => {
+                    if (shareSelectMode) {
+                        if (selectedForShare.has(img.id)) selectedForShare.delete(img.id);
+                        else selectedForShare.add(img.id);
+                        refreshSelectedLook();
+                    } else {
+                        showEnlarged(img.id);
+                    }
+                };
+                refreshSelectedLook();
                 wrapper.appendChild(el);
                 getThumbnailBlobUrl(img.id)
                     .then(url => { el.src = url; spinner.remove(); })
                     .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); spinner.remove(); });
-
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.checked = true;
-                checkbox.className = 'share-checkbox';
-                checkbox.title = 'Include in share';
-                checkbox.onclick = (e) => e.stopPropagation();
-                checkbox.onchange = () => {
-                    if (checkbox.checked) selectedForShare.add(img.id);
-                    else selectedForShare.delete(img.id);
-                };
-                wrapper.appendChild(checkbox);
 
                 grid.appendChild(wrapper);
             });
@@ -1312,7 +1400,7 @@
             const allImages = orderedGroups.flatMap(g => g.images);
             const selectedImages = allImages.filter(img => selectedForShare.has(img.id));
             if (selectedImages.length === 0) {
-                alert('Select at least one image to share (checkbox on each photo).');
+                alert('Select at least one image to share (tap a photo to select it).');
                 return;
             }
 
@@ -1409,10 +1497,8 @@ ${bodyHtml}
 
             function renderViewToggle() {
                 const showMap = currentView === 'map';
-                mapDiv.style.display = showMap ? 'block' : 'none';
+                mapDiv.style.display = showMap ? 'block' : 'none'; // hiding #map also hides the frame/compass layers on it
                 listDiv.style.display = showMap ? 'none' : 'block';
-                document.getElementById('map-frame').style.display = showMap ? 'block' : 'none';
-                document.getElementById('compass-rose').style.display = showMap ? 'block' : 'none';
                 document.getElementById('toggle-names-btn').style.display = showMap ? 'flex' : 'none'; // map-only control
                 if (showMap) {
                     viewToggleBtn.innerHTML = MAP_ICON_SVG; // shows current mode icon; click switches to the other
@@ -1599,6 +1685,18 @@ ${bodyHtml}
             return cachedGeoFeatures;
         }
 
+        // Decorative antique-map compass rose, added to the map as a fixed-
+        // pixel-size marker anchored to a real lat/lng (see initMap) so it
+        // pans/zooms together with the map instead of floating over it.
+        const COMPASS_ROSE_SVG = `<svg viewBox="0 0 100 100" width="90" height="90" aria-hidden="true">
+            <circle cx="50" cy="50" r="47" fill="none" stroke="currentColor" stroke-width="0.7" opacity="0.55"/>
+            <circle cx="50" cy="50" r="38" fill="none" stroke="currentColor" stroke-width="0.5" opacity="0.4"/>
+            <polygon points="71.2,28.8 58.0,50.0 71.2,71.2 50.0,58.0 28.8,71.2 42.0,50.0 28.8,28.8 50.0,42.0" fill="currentColor" opacity="0.35"/>
+            <polygon points="50.0,4.0 57.8,42.2 96.0,50.0 57.8,57.8 50.0,96.0 42.2,57.8 4.0,50.0 42.2,42.2" fill="currentColor" opacity="0.65"/>
+            <circle cx="50" cy="50" r="3.5" fill="currentColor" opacity="0.8"/>
+            <text x="50" y="14" text-anchor="middle" font-size="9" font-family="Georgia, serif" fill="currentColor" opacity="0.85">N</text>
+        </svg>`;
+
         async function initMap() {
             countryLayers = {};
             COUNTRY_NAME_LOOKUP = {};
@@ -1637,6 +1735,21 @@ ${bodyHtml}
             L.geoJSON({ type: 'FeatureCollection', features }, {
                 style: { weight: 0.6, color: BORDER_COLOR, fillColor: MUTED_COLOR, fillOpacity: 0.1 },
                 onEachFeature: onEachCountry
+            }).addTo(leafletMap);
+
+            // Antique-map dressing, anchored in map space (lat/lng), not
+            // screen space, so both pan and zoom together with the map:
+            // - a double border rectangle drawn right at the world's edge
+            // - a compass rose sitting in open ocean west of South America
+            L.rectangle([[-90, -169], [90, 191]], {
+                interactive: false, fill: false, color: BORDER_COLOR, weight: 4, opacity: 0.7
+            }).addTo(leafletMap);
+            L.rectangle([[-87, -166], [87, 188]], {
+                interactive: false, fill: false, color: BORDER_COLOR, weight: 1.5, opacity: 0.5
+            }).addTo(leafletMap);
+            L.marker([-20, -100], {
+                icon: L.divIcon({ className: 'compass-rose-icon', html: COMPASS_ROSE_SVG, iconSize: [90, 90], iconAnchor: [45, 45] }),
+                interactive: false, keyboard: false
             }).addTo(leafletMap);
 
             // Applies the current coloring mode (default: none shown at
