@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>My Collections</title>
+    <!-- App icon: the browser-tab favicon (Windows/desktop) and the Android
+         "Add to Home screen" shortcut icon both come from these two files
+         (icons/icon-192.png, icons/icon-512.png) plus manifest.json - all
+         three need to sit next to index.html in the repo. -->
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="icons/icon-512.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#5a3d22">
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="https://apis.google.com/js/api.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -287,14 +296,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">2.01</div>
+        <div class="app-version">2.02</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">2.01</div>
+            <div id="app-version" title="Thumbnail cache info">2.02</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -1824,10 +1833,30 @@ ${bodyHtml}
                 mapDiv.style.display = showMap ? 'block' : 'none'; // hiding #map also hides the frame/compass layers on it
                 listDiv.style.display = showMap ? 'none' : 'block';
                 if (showMap) {
-                    viewToggleBtn.innerHTML = MAP_ICON_SVG; // shows current mode icon; click switches to the other
-                    viewToggleBtn.title = 'Switch to List view';
-                } else {
+                    // Icon shows where the button will take you NEXT, not the
+                    // mode you're already in - so while looking at the map,
+                    // the icon is the list icon (and vice versa below).
                     viewToggleBtn.innerHTML = LIST_ICON_SVG;
+                    viewToggleBtn.title = 'Switch to List view';
+                    // #map was just display:none while list view was showing.
+                    // Leaflet's canvas renderer (preferCanvas:true - used for
+                    // the country polygons AND the map-frame/grid lines) can
+                    // be left with a stale size/paint by that, so on Android
+                    // in particular the map (and sometimes just one grid
+                    // line near the pole) can come back blank or incomplete
+                    // until some later pan/zoom forces a repaint - only the
+                    // compass rose, a real SVG overlay rather than canvas,
+                    // always showed up fine. invalidateSize() forces Leaflet
+                    // to recompute its container size and repaint every
+                    // layer immediately; the rAF-deferred second call is a
+                    // safety net for browsers where the display:none->block
+                    // layout isn't fully settled yet on the first call.
+                    if (leafletMap) {
+                        leafletMap.invalidateSize();
+                        requestAnimationFrame(() => leafletMap.invalidateSize());
+                    }
+                } else {
+                    viewToggleBtn.innerHTML = MAP_ICON_SVG;
                     viewToggleBtn.title = 'Switch to Map view';
                 }
             }
