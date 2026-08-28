@@ -287,14 +287,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.8</div>
+        <div class="app-version">v1.9</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">v1.8</div>
+            <div id="app-version" title="Thumbnail cache info">v1.9</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -2198,23 +2198,112 @@ ${bodyHtml}
         // ---------- Step 7: opening a collection ----------
         // Fetches every country folder AND the images inside each one,
         // directly from the browser - no server involved at all.
+        // ---------- Optional "shared currency" config -----------------
+        // A plain-text file named exactly this, placed directly in the
+        // collection's root Drive folder (alongside the country folders),
+        // one currency group per line:
+        //   EUR:AUT, BEL, BGR, HRV, CYP, EST, FIN, FRA, DEU, GRC, IRL, ...
+        // Any folder in the root whose name matches a currency code from
+        // this file (e.g. a folder literally named "EUR") is treated as a
+        // shared pool, not a country of its own: its images get folded
+        // into EVERY listed country, in addition to whatever that country
+        // already has in its own folder - so a Eurozone note only has to
+        // be scanned and filed once, not copied into 27 country folders.
+        // Blank lines and lines starting with # are ignored. Missing or
+        // unparsable file -> no groups, never blocks opening the collection.
+        const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
+        async function readCurrencyGroups(rootFolderId) {
+            try {
+                const listResp = await gapi.client.drive.files.list({
+                    q: `'${rootFolderId}' in parents and name='${MULTI_CURRENCY_CONFIG_FILENAME}' and trashed=false`,
+                    fields: 'files(id, name, mimeType)'
+                });
+                const file = (listResp.result.files || [])[0];
+                if (!file) return {};
+
+                // A file typed straight into Drive as "New > Google Doc"
+                // needs export (alt=media only works on actual binary/text
+                // file uploads, not Docs-Editors files) - support both so
+                // it doesn't matter which way the file was created.
+                let text;
+                if (file.mimeType === 'application/vnd.google-apps.document') {
+                    const exportResp = await gapi.client.drive.files.export({ fileId: file.id, mimeType: 'text/plain' });
+                    text = exportResp.body;
+                } else {
+                    const contentResp = await gapi.client.drive.files.get({ fileId: file.id, alt: 'media' });
+                    text = contentResp.body;
+                }
+
+                const groups = {};
+                (text || '').split('\n').forEach(line => {
+                    line = line.trim();
+                    if (!line || line.startsWith('#')) return;
+                    const colonIdx = line.indexOf(':');
+                    if (colonIdx === -1) return;
+                    const currency = line.slice(0, colonIdx).trim().toUpperCase();
+                    const codes = line.slice(colonIdx + 1).split(',').map(c => c.trim().toUpperCase()).filter(Boolean);
+                    if (currency && codes.length) groups[currency] = codes;
+                });
+                return groups;
+            } catch (err) {
+                console.warn(`Could not read ${MULTI_CURRENCY_CONFIG_FILENAME} config:`, err);
+                return {};
+            }
+        }
+
         async function fetchCollectionData(rootFolderId) {
-            const foldersResp = await gapi.client.drive.files.list({
-                q: `'${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-                fields: 'files(id, name)',
-                pageSize: 1000
-            });
+            const [foldersResp, currencyGroups] = await Promise.all([
+                gapi.client.drive.files.list({
+                    q: `'${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+                    fields: 'files(id, name)',
+                    pageSize: 1000
+                }),
+                readCurrencyGroups(rootFolderId)
+            ]);
             const folders = foldersResp.result.files;
 
-            const countries = [];
-            for (const folder of folders) {
+            async function listImages(folder) {
                 const imagesResp = await gapi.client.drive.files.list({
                     q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed=false`,
                     fields: 'files(id, name)',
                     pageSize: 1000
                 });
-                countries.push({ code: folder.name, images: imagesResp.result.files });
+                return imagesResp.result.files;
             }
+            // Every folder's images are fetched in parallel (country
+            // folders and currency folders alike - a currency folder's
+            // images are only fetched once here, then reused for every
+            // country in its group below).
+            const imageLists = await Promise.all(folders.map(f => listImages(f).then(images => ({ name: f.name, images }))));
+            const imagesByFolderName = {};
+            imageLists.forEach(({ name, images }) => { imagesByFolderName[name.toUpperCase()] = images; });
+
+            const currencyFolderNames = new Set(Object.keys(currencyGroups));
+            const countries = folders
+                .filter(f => !currencyFolderNames.has(f.name.toUpperCase()))
+                .map(f => ({ code: f.name, images: (imagesByFolderName[f.name.toUpperCase()] || []).slice() }));
+
+            const countryByCode = {};
+            countries.forEach(c => { countryByCode[c.code.toUpperCase()] = c; });
+
+            Object.entries(currencyGroups).forEach(([currency, codes]) => {
+                const sharedImages = imagesByFolderName[currency] || [];
+                if (!sharedImages.length) return;
+                codes.forEach(code => {
+                    let entry = countryByCode[code];
+                    if (!entry) {
+                        // No folder of its own yet - still gets the shared
+                        // currency's notes, e.g. a Eurozone member you
+                        // haven't made an individual folder for.
+                        entry = { code, images: [] };
+                        countries.push(entry);
+                        countryByCode[code] = entry;
+                    }
+                    const existingIds = new Set(entry.images.map(img => img.id));
+                    sharedImages.forEach(img => { if (!existingIds.has(img.id)) entry.images.push(img); });
+                });
+            });
+
             return countries;
         }
 
