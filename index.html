@@ -296,14 +296,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">2.03</div>
+        <div class="app-version">2.04</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">2.03</div>
+            <div id="app-version" title="Thumbnail cache info">2.04</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -2106,14 +2106,27 @@ ${bodyHtml}
         // instead of raw degrees). No text labels this time - just evenly
         // spaced lines, kept inside the border.
         function buildMapFrame() {
+            // Rendered on its own dedicated SVG renderer, NOT the shared
+            // canvas the ~250 country polygons use (preferCanvas:true on
+            // the map). Two earlier attempts at the "one grid line near the
+            // pole sometimes never paints" bug (invalidateSize(), then an
+            // explicit layer.redraw()) both assumed it was a one-off missed
+            // repaint on the shared canvas - but it kept recurring in the
+            // exact same spot, which points to something structural about
+            // that canvas's batched dirty-region repaint rather than a
+            // random timing miss. SVG elements are persistent DOM nodes -
+            // once added there is no batched repaint step that can skip
+            // one - so moving the frame here removes the failure mode
+            // entirely instead of nudging it to be less likely.
+            const frameRenderer = L.svg({ padding: 2 });
             const group = L.layerGroup();
-            const lineStyle = { color: FRAME_COLOR, weight: 1, opacity: 0.8, interactive: false, fill: false };
-            const gridStyle = { color: FRAME_COLOR, weight: 0.6, opacity: 0.4, interactive: false, fill: false };
+            const lineStyle = { color: FRAME_COLOR, weight: 1, opacity: 0.8, interactive: false, fill: false, renderer: frameRenderer };
+            const gridStyle = { color: FRAME_COLOR, weight: 0.6, opacity: 0.4, interactive: false, fill: false, renderer: frameRenderer };
             function stripe(bounds, dark) {
                 L.rectangle(bounds, {
                     color: FRAME_COLOR, weight: 1, opacity: 0.8,
                     fillColor: dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, fillOpacity: dark ? 0.85 : 1,
-                    interactive: false
+                    interactive: false, renderer: frameRenderer
                 }).addTo(group);
             }
 
@@ -2261,18 +2274,7 @@ ${bodyHtml}
             // a ruled border + lat/long grid (see buildMapFrame), and a
             // compass rose sitting in open ocean west of South America as
             // a real SVG overlay so it scales with the map.
-            const frameGroup = buildMapFrame().addTo(leafletMap);
-            // Explicitly ask every stripe/grid-line/border element to redraw
-            // itself right after being added. All these paths share one
-            // canvas (preferCanvas:true) with the country polygons, and on
-            // some devices (seen on Android) a path added to a canvas
-            // renderer can end up skipped on the very first paint - most
-            // often one of the grid lines, since they're thin (low weight)
-            // and easy to miss even when the rest of the frame looks fine.
-            // Path.redraw() is Leaflet's own public API for "repaint this
-            // element," which is more reliable here than hoping a general
-            // map-level repaint happens to cover it.
-            frameGroup.eachLayer(layer => layer.redraw());
+            buildMapFrame().addTo(leafletMap);
 
             const compassSvgEl = new DOMParser().parseFromString(COMPASS_ROSE_SVG, 'image/svg+xml').documentElement;
             L.svgOverlay(compassSvgEl, COMPASS_BOUNDS, {
