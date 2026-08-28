@@ -95,7 +95,8 @@
             display: flex; flex-direction: column;
         }
         #cv-title { order: 1; font-size: 24px; margin: 0 0 16px 0; color: var(--accent-owned); text-align: center; }
-        #app-version { order: 3; text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 8px; }
+        #app-version { order: 3; text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 8px; cursor: pointer; }
+        #app-version:hover { opacity: 1; }
         #cv-controls-row { order: 2; }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
 
@@ -116,15 +117,21 @@
                 align-items: center; gap: 4px 10px;
                 padding: 8px 10px;
             }
-            #cv-title { grid-area: title; font-size: 18px; margin: 0; text-align: left; }
+            #cv-title { grid-area: title; font-size: 22px; font-weight: 700; margin: 0; text-align: left; }
             #app-version { grid-area: version; margin-top: 0; }
             #cv-controls-row {
                 grid-area: controls; display: flex; align-items: center; gap: 6px;
             }
-            #icon-row { margin-bottom: 0; gap: 6px; }
-            .icon-btn { width: 30px; height: 30px; font-size: 14px; }
-            .search-wrap { margin-bottom: 0; flex: 1 1 140px; min-width: 100px; }
-            #search-box, #search-ghost { font-size: 12px; padding: 6px 8px; }
+            #icon-row { margin-bottom: 0; gap: 6px; align-items: center; }
+            /* Cancel the desktop "stretch to fill the row" sizing (flex:1 +
+               aspect-ratio) - here the icon row sits BESIDE the search box
+               instead of stacked above it, so buttons go back to a fixed
+               square size. That size (30px) is also given to the search
+               box explicitly below, so the two end up exactly the same
+               height and sit flush together instead of looking offset. */
+            .icon-btn { flex: 0 0 30px; aspect-ratio: auto; width: 30px; height: 30px; font-size: 14px; }
+            .search-wrap { margin-bottom: 0; flex: 1 1 140px; min-width: 100px; align-self: center; }
+            #search-box, #search-ghost { height: 30px; font-size: 12px; padding: 0 8px; }
             #toggle-names-btn { display: none !important; } /* map-only, low priority on a small screen */
             .legend-btn { font-size: 11px; padding: 6px 8px; margin-bottom: 0; width: auto; }
             .box { max-width: 92vw; padding: 24px 20px; }
@@ -144,9 +151,14 @@
         }
         .legend-btn.active { border-color: currentColor; background: rgba(255,255,255,0.08); }
         .legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-        #icon-row { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
+        /* Buttons stretch to fill the row (instead of a fixed pixel width)
+           so the row's rendered width always exactly matches the search
+           box below it (width:100% of the same container) - a fixed
+           width here previously didn't add up to the container's actual
+           width and made the two rows look mismatched. */
+        #icon-row { display: flex; gap: 6px; margin-bottom: 16px; }
         .icon-btn {
-            width: 34px; height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+            flex: 1 1 0; min-width: 0; aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
             background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
             cursor: pointer; padding: 0; font-size: 16px; line-height: 1;
         }
@@ -234,6 +246,17 @@
             background: rgba(0,0,0,0.9); z-index: 2000; text-align: center;
         }
         #enlarge-overlay img { max-width: 90%; max-height: 90%; margin-top: 5vh; border-radius: 8px; }
+        #cache-modal-backdrop { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 1500; }
+        #cache-modal {
+            display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 280px; max-width: 90%; background: var(--bg-translucent); backdrop-filter: blur(6px);
+            color: var(--text); border: 1px solid var(--border); border-radius: 10px;
+            box-shadow: 0 4px 30px rgba(0,0,0,0.6); z-index: 1501; padding: 20px; text-align: center;
+        }
+        #cache-modal h3 { margin: 0 0 12px 0; color: var(--accent-owned); }
+        #cache-modal-stats { font-size: 13px; color: var(--text-dim); margin: 0 0 18px 0; line-height: 1.6; }
+        #cache-modal-actions { display: flex; gap: 8px; }
+        #cache-modal-actions .legend-btn { justify-content: center; margin-bottom: 0; }
     </style>
 </head>
 <body>
@@ -244,14 +267,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.4</div>
+        <div class="app-version">v1.5</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version">v1.4</div>
+            <div id="app-version" title="Thumbnail cache info">v1.5</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -320,6 +343,19 @@
         </div>
         <div id="enlarge-overlay">
             <img id="enlarge-img" src="">
+        </div>
+        <!-- Drive's appData space is hidden from Drive's own UI by design
+             (that's why it was chosen for the thumbnail cache - see
+             getDriveThumbIndex), so this is the only way to actually see
+             what's cached: click the version number to open it. -->
+        <div id="cache-modal-backdrop"></div>
+        <div id="cache-modal">
+            <h3>Thumbnail cache</h3>
+            <p id="cache-modal-stats">Loading…</p>
+            <div id="cache-modal-actions">
+                <button id="cache-clear-btn" class="legend-btn">Clear cache</button>
+                <button id="cache-close-btn" class="legend-btn">Close</button>
+            </div>
         </div>
     </div>
 
@@ -391,6 +427,54 @@
         // ---------- Step 2: sign in with Google (gets an access token) ----------
         document.getElementById('signin-btn').onclick = () => {
             tokenClient.requestAccessToken();
+        };
+
+        // ---------- Thumbnail cache info panel ----------
+        // Drive's appData space is deliberately hidden from Drive's own UI
+        // (see getDriveThumbIndex) - this popup is the only way to actually
+        // see what's cached there, and to clear it (e.g. to test a fresh
+        // cross-device sync). Wired once, at page load - it doesn't depend
+        // on any collection being open.
+        async function openCacheModal() {
+            document.getElementById('cache-modal-backdrop').style.display = 'block';
+            document.getElementById('cache-modal').style.display = 'block';
+            const statsEl = document.getElementById('cache-modal-stats');
+            statsEl.textContent = 'Loading…';
+            try {
+                const index = await getDriveThumbIndex();
+                const count = index.size;
+                const totalBytes = [...index.values()].reduce((sum, v) => sum + (v.size || 0), 0);
+                const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+                statsEl.innerHTML = `${count} thumbnail${count === 1 ? '' : 's'} cached in Drive<br>≈ ${mb} MB` +
+                    `<br><span style="opacity:0.7;font-size:11px;">(private app storage - not visible in Drive itself)</span>`;
+            } catch (err) {
+                statsEl.textContent = 'Could not read cache info: ' + (err.message || err);
+            }
+        }
+        function closeCacheModal() {
+            document.getElementById('cache-modal-backdrop').style.display = 'none';
+            document.getElementById('cache-modal').style.display = 'none';
+        }
+        document.getElementById('app-version').onclick = openCacheModal;
+        document.getElementById('cache-modal-backdrop').onclick = closeCacheModal;
+        document.getElementById('cache-close-btn').onclick = closeCacheModal;
+        document.getElementById('cache-clear-btn').onclick = async () => {
+            if (!confirm('Delete all cached thumbnails from Drive? They\'ll be regenerated automatically the next time each photo is viewed.')) return;
+            const statsEl = document.getElementById('cache-modal-stats');
+            statsEl.textContent = 'Clearing…';
+            try {
+                const index = await getDriveThumbIndex();
+                const ids = [...index.values()].map(v => v.id);
+                for (const id of ids) {
+                    try { await gapi.client.drive.files.delete({ fileId: id }); }
+                    catch (err) { console.warn('Could not delete cached thumbnail', id, err); }
+                }
+                driveThumbIndexPromise = null; // force a fresh rebuild next time anything needs it
+                await setMeta(THUMB_META_KEY, { entries: [], lastSyncTime: null });
+                statsEl.textContent = 'Cache cleared.';
+            } catch (err) {
+                statsEl.textContent = 'Failed to clear cache: ' + (err.message || err);
+            }
         };
 
         // ---------- Step 3: read the saved collections list from Drive's
@@ -539,14 +623,42 @@
         function getDB() {
             if (dbPromise) return dbPromise;
             dbPromise = new Promise((resolve, reject) => {
-                const request = indexedDB.open('coin_collection_cache', 1);
+                // v2 adds a small "meta" store used to persist the Drive-side
+                // thumbnail index locally (see getDriveThumbIndex) - unrelated
+                // to the "images" blob cache, just sharing the same database.
+                const request = indexedDB.open('coin_collection_cache', 2);
                 request.onupgradeneeded = () => {
-                    request.result.createObjectStore('images');
+                    if (!request.result.objectStoreNames.contains('images')) {
+                        request.result.createObjectStore('images');
+                    }
+                    if (!request.result.objectStoreNames.contains('meta')) {
+                        request.result.createObjectStore('meta');
+                    }
                 };
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
             });
             return dbPromise;
+        }
+
+        async function getMeta(key) {
+            const db = await getDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('meta', 'readonly');
+                const req = tx.objectStore('meta').get(key);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function setMeta(key, value) {
+            const db = await getDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction('meta', 'readwrite');
+                tx.objectStore('meta').put(value, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
         }
 
         async function cacheGet(key) {
@@ -680,23 +792,52 @@
         // same one layouts.json already uses), so no extra Google
         // permission / re-login is required and there's no risk of a
         // thumbnail file being mistaken for one of your photos.
+        // The index has to list EVERY thumbnail ever cached for the whole
+        // collection (not just the country being opened) before it can
+        // answer "is this one file already cached?" - so on a brand new
+        // page load that full listing was paid up front, before even the
+        // first (already-cached) thumbnail could be shown. As the total
+        // number of cached thumbnails grows over time, that fixed cost
+        // grows with it. Fix: persist the index locally (per browser, in
+        // IndexedDB) and, after the first time, only ask Drive for
+        // whatever was added since this browser's last sync instead of
+        // re-listing everything every single time.
+        const THUMB_META_KEY = 'driveThumbIndex';
         let driveThumbIndexPromise = null;
         function getDriveThumbIndex() {
             if (driveThumbIndexPromise) return driveThumbIndexPromise;
             driveThumbIndexPromise = (async () => {
-                const index = new Map(); // "<fileId>_thumb.jpg" -> Drive fileId of the cached thumb
+                let persisted = null;
+                try { persisted = await getMeta(THUMB_META_KEY); }
+                catch (err) { console.warn('Could not read persisted thumbnail index:', err); }
+
+                const index = new Map(persisted ? persisted.entries : []); // name -> {id, size}
+                const lastSyncTime = persisted ? persisted.lastSyncTime : null;
+                let newestSeen = lastSyncTime;
+
+                let q = "name contains '_thumb.jpg' and trashed=false";
+                if (lastSyncTime) q += ` and createdTime >= '${lastSyncTime}'`;
+
                 let pageToken;
                 do {
                     const resp = await gapi.client.drive.files.list({
-                        spaces: 'appDataFolder',
-                        q: "name contains '_thumb.jpg' and trashed=false",
-                        fields: 'nextPageToken, files(id, name)',
-                        pageSize: 1000,
-                        pageToken
+                        spaces: 'appDataFolder', q,
+                        fields: 'nextPageToken, files(id, name, size, createdTime)',
+                        pageSize: 1000, pageToken
                     });
-                    (resp.result.files || []).forEach(f => index.set(f.name, f.id));
+                    (resp.result.files || []).forEach(f => {
+                        index.set(f.name, { id: f.id, size: Number(f.size) || 0 });
+                        if (!newestSeen || f.createdTime > newestSeen) newestSeen = f.createdTime;
+                    });
                     pageToken = resp.result.nextPageToken;
                 } while (pageToken);
+
+                if (newestSeen && newestSeen !== lastSyncTime) {
+                    // Not on the critical path - the resolved Map is already
+                    // correct in memory regardless of whether this succeeds.
+                    setMeta(THUMB_META_KEY, { entries: [...index.entries()], lastSyncTime: newestSeen })
+                        .catch(err => console.warn('Could not persist thumbnail index:', err));
+                }
                 return index;
             })();
             return driveThumbIndexPromise;
@@ -743,7 +884,7 @@
                     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
                     body: multipartBody
                 });
-                index.set(thumbName, resp.result.id);
+                index.set(thumbName, { id: resp.result.id, size: thumbBlob.size });
             } catch (err) {
                 console.warn('Could not cache thumbnail to Drive for', fileId, ':', err);
             } finally {
@@ -761,9 +902,9 @@
             // another) will already be there.
             try {
                 const index = await getDriveThumbIndex();
-                const driveThumbId = index.get(fileId + '_thumb.jpg');
-                if (driveThumbId) {
-                    const thumbBlob = await fetchDriveThumbBlob(driveThumbId);
+                const entry = index.get(fileId + '_thumb.jpg');
+                if (entry) {
+                    const thumbBlob = await fetchDriveThumbBlob(entry.id);
                     await cacheSet(cacheKey, thumbBlob);
                     return URL.createObjectURL(thumbBlob);
                 }
@@ -1614,23 +1755,51 @@ ${bodyHtml}
             }
             window._passesFilters = passesFilters;
 
-            function applyFilters() {
+            // `animate: true` gives the "filling in country by country" reveal
+            // that used to happen on load/reset - every matching country starts
+            // muted and gets its real color in a random order, spread over
+            // ~REVEAL_MS total, purely decorative. Every other caller (typing
+            // in search, toggling color mode, etc.) still colors instantly -
+            // animating those too would just make the UI feel laggy.
+            const REVEAL_MS = 5000;
+            function applyFilters(opts) {
+                const animate = !!(opts && opts.animate);
                 const matched = [];
+                const toReveal = [];
                 Object.entries(countryLayers).forEach(([code, layers]) => {
                     const name = COUNTRY_NAME_LOOKUP[code] || code;
                     const isOwned = collectionData.hasOwnProperty(code);
                     const show = passesFilters(code, name);
-                    layers.forEach(layer => {
-                        layer.setStyle(show
-                            ? { fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
-                            : { fillColor: MUTED_COLOR, fillOpacity: 0.18 });
-                    });
                     if (show) matched.push(code);
+                    if (animate) {
+                        layers.forEach(layer => layer.setStyle({ fillColor: MUTED_COLOR, fillOpacity: 0.18 }));
+                        if (show) toReveal.push({ layers, isOwned });
+                    } else {
+                        layers.forEach(layer => {
+                            layer.setStyle(show
+                                ? { fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
+                                : { fillColor: MUTED_COLOR, fillOpacity: 0.18 });
+                        });
+                    }
                 });
                 document.querySelectorAll('.country-item').forEach(item => {
                     item.style.display = passesFilters(item.dataset.code, item.dataset.name) ? 'flex' : 'none';
                 });
                 refreshLabels2D();
+                if (animate && toReveal.length) {
+                    for (let i = toReveal.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [toReveal[i], toReveal[j]] = [toReveal[j], toReveal[i]];
+                    }
+                    const step = REVEAL_MS / toReveal.length;
+                    toReveal.forEach((entry, idx) => {
+                        setTimeout(() => {
+                            entry.layers.forEach(layer => layer.setStyle({
+                                fillColor: entry.isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65
+                            }));
+                        }, idx * step);
+                    });
+                }
                 return matched;
             }
             window._applyFilters = applyFilters;
@@ -1710,7 +1879,7 @@ ${bodyHtml}
                 searchBox.value = ''; searchGhost.value = '';
                 colorMode = 'both';
                 renderColorModeButton();
-                applyFilters();
+                applyFilters({ animate: true });
                 // Fit to whatever is actually on the map (now that Antarctica
                 // is excluded) instead of a fixed center/zoom, so the whole
                 // (remaining) world is always shown regardless of window size.
@@ -1838,9 +2007,9 @@ ${bodyHtml}
                 interactive: false, className: 'compass-rose-overlay'
             }).addTo(leafletMap);
 
-            // Applies the current coloring mode (default: none shown at
-            // all) instead of always revealing colors on load.
-            window._applyFilters();
+            // Applies the current coloring mode with the staggered
+            // random-reveal animation, same as clicking Reset view.
+            window._applyFilters({ animate: true });
             leafletMap.fitBounds(worldLayerGroup.getBounds(), { padding: [10, 10] });
         }
 
