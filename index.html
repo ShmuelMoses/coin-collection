@@ -172,6 +172,10 @@
            fixed-pixel marker/divIcon), specifically so it scales with the
            map instead of staying a constant screen size while zooming. */
         .compass-rose-overlay { color: var(--text); opacity: 0.6; pointer-events: none; }
+        .grid-label {
+            color: var(--text); opacity: 0.5; font-size: 10px; text-align: center; white-space: nowrap;
+            text-shadow: 0 0 3px var(--label-halo), 0 0 3px var(--label-halo); pointer-events: none;
+        }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
             color: var(--text); text-shadow: 0 0 3px var(--label-halo), 0 0 3px var(--label-halo);
@@ -267,14 +271,14 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v1.5</div>
+        <div class="app-version">v1.6</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">v1.5</div>
+            <div id="app-version" title="Thumbnail cache info">v1.6</div>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections">
@@ -447,6 +451,10 @@
                 const mb = (totalBytes / (1024 * 1024)).toFixed(1);
                 statsEl.innerHTML = `${count} thumbnail${count === 1 ? '' : 's'} cached in Drive<br>≈ ${mb} MB` +
                     `<br><span style="opacity:0.7;font-size:11px;">(private app storage - not visible in Drive itself)</span>`;
+                if (lastThumbUploadError) {
+                    statsEl.innerHTML += `<br><br><span style="color:var(--accent-none);font-size:11px;">` +
+                        `Last upload error: ${lastThumbUploadError}</span>`;
+                }
             } catch (err) {
                 statsEl.textContent = 'Could not read cache info: ' + (err.message || err);
             }
@@ -851,20 +859,30 @@
             return resp.blob();
         }
 
-        async function blobToBase64(blob) {
-            const buf = await blob.arrayBuffer();
-            const bytes = new Uint8Array(buf);
-            let binary = '';
-            const chunkSize = 0x8000; // avoid blowing the call stack on String.fromCharCode.apply
-            for (let i = 0; i < bytes.length; i += chunkSize) {
-                binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-            }
-            return btoa(binary);
-        }
+        // Surfaced in the thumbnail-cache info panel (click the version
+        // number) so a future upload problem is visible in the app itself,
+        // not just in the browser console.
+        let lastThumbUploadError = null;
 
         const thumbUploadsInFlight = new Set();
         // Fire-and-forget: never blocks or breaks thumbnail display if it fails
         // (offline, quota, etc.) - it's purely a "make next time faster" step.
+        //
+        // Uses fetch() with a native FormData body rather than hand-building
+        // a multipart/related string through gapi.client.request. That
+        // hand-rolled version was the actual bug behind thumbnails never
+        // getting cached: it depended on a helper called blobToBase64() -
+        // but there are TWO functions with that exact name in this file
+        // (this one used to build raw base64 for the upload; a second,
+        // unrelated one further down builds a full data: URL for the
+        // "share" export feature). With two same-named top-level function
+        // declarations, only the LAST one in the file wins for every
+        // caller, everywhere - so this upload was actually sending a
+        // "data:image/jpeg;base64,...." string as the file content instead
+        // of raw base64, which Drive silently rejected every single time.
+        // FormData sidesteps the whole problem: the browser builds the
+        // multipart body and boundary itself and takes the blob directly,
+        // no base64/manual boundary involved at all.
         async function uploadThumbnailToDrive(fileId, thumbBlob) {
             const thumbName = fileId + '_thumb.jpg';
             if (thumbUploadsInFlight.has(thumbName)) return;
@@ -872,20 +890,24 @@
             try {
                 const index = await getDriveThumbIndex();
                 if (index.has(thumbName)) return; // already cached (e.g. by another tab/device)
-                const base64Data = await blobToBase64(thumbBlob);
-                const boundary = '-------314159265358979323846';
                 const metadata = { name: thumbName, mimeType: 'image/jpeg', parents: ['appDataFolder'] };
-                const multipartBody =
-                    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-                    `--${boundary}\r\nContent-Type: image/jpeg\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64Data}\r\n--${boundary}--`;
-                const resp = await gapi.client.request({
-                    path: '/upload/drive/v3/files?uploadType=multipart',
+                const form = new FormData();
+                form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                form.append('file', thumbBlob);
+                const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
                     method: 'POST',
-                    headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-                    body: multipartBody
+                    headers: { Authorization: 'Bearer ' + accessToken }, // no Content-Type - the browser sets the multipart boundary itself
+                    body: form
                 });
-                index.set(thumbName, { id: resp.result.id, size: thumbBlob.size });
+                if (!resp.ok) {
+                    const text = await resp.text().catch(() => '');
+                    throw new Error(`Drive upload returned ${resp.status}: ${text.slice(0, 300)}`);
+                }
+                const result = await resp.json();
+                index.set(thumbName, { id: result.id, size: thumbBlob.size });
+                lastThumbUploadError = null;
             } catch (err) {
+                lastThumbUploadError = (err && err.message) ? err.message : String(err);
                 console.warn('Could not cache thumbnail to Drive for', fileId, ':', err);
             } finally {
                 thumbUploadsInFlight.delete(thumbName);
@@ -1003,6 +1025,23 @@
         const NONE_COLOR = '#a13d2b';
         const MUTED_COLOR = '#a89a78';
         const BORDER_COLOR = 'rgba(59,42,26,0.45)';
+        const FRAME_COLOR = '#5a3d22';
+
+        // Antique-style ruled border + lat/long grid, anchored in map
+        // space (lat/lng) like the compass rose, NOT screen space - so it
+        // pans and zooms together with the map. Unlike the old decorative
+        // frame (removed a few rounds ago - it reached lat=+/-90, which
+        // collapses to an infinite line in Web Mercator and was the cause
+        // of the recurring "stray horizontal line" bug), this stays well
+        // clear of the poles and of the antimeridian handling entirely -
+        // it's just plain straight polylines, which are geographic data
+        // and already move/scale with the map with no extra trick needed
+        // (that trick was only required for the compass rose because
+        // that's a raster/vector icon, not naturally geographic).
+        const FRAME_LAT_MIN = -60, FRAME_LAT_MAX = 84;
+        const FRAME_LON_MIN = -169, FRAME_LON_MAX = 191; // matches maxBounds' custom Bering-Strait seam
+        const FRAME_BOUNDS = [[FRAME_LAT_MIN, FRAME_LON_MIN], [FRAME_LAT_MAX, FRAME_LON_MAX]];
+        const GRID_LON_STEP = 30, GRID_LAT_STEP = 20;
 
         let cvCountries = [];       // raw [{code, images:[{id,name}]}] for the open collection
         let cvCountryMap = {};      // merged: {code: {own:[images], historical:{histCode:[images]}}}
@@ -1013,7 +1052,7 @@
         let colorMode = 'both'; // 'owned' | 'none' | 'both' - cycles via the color-mode button ('neither'/Off was removed)
         let currentView = 'map';   // 'map' | 'list'
         let leafletMap = null;
-        let worldLayerGroup = null; // the L.geoJSON layer for all visible countries - used to fit/reset the view
+        let worldLayerGroup = null; // the L.geoJSON layer for all visible countries
 
         // Merges historical-entity folders (USSR, Ottoman Empire, etc.)
         // into the modern country they map to, so they can be shown as a
@@ -1880,13 +1919,11 @@ ${bodyHtml}
                 colorMode = 'both';
                 renderColorModeButton();
                 applyFilters({ animate: true });
-                // Fit to whatever is actually on the map (now that Antarctica
-                // is excluded) instead of a fixed center/zoom, so the whole
-                // (remaining) world is always shown regardless of window size.
-                if (leafletMap && worldLayerGroup) {
-                    leafletMap.fitBounds(worldLayerGroup.getBounds(), { padding: [10, 10] });
-                } else if (leafletMap) {
-                    leafletMap.setView([20, 10], 2);
+                // Fit to the map frame's own bounds (border + grid included,
+                // not just the country data) so Reset always shows the whole
+                // antique "map on parchment" the same way the initial load does.
+                if (leafletMap) {
+                    leafletMap.fitBounds(FRAME_BOUNDS, { padding: [10, 10] });
                 }
             };
         }
@@ -1933,6 +1970,68 @@ ${bodyHtml}
             const geoData = await fetch('countries.geojson').then(r => r.json());
             cachedGeoFeatures = geoData.features.filter(featureFilter);
             return cachedGeoFeatures;
+        }
+
+        // Builds the ruled border + lat/long grid as a plain Leaflet
+        // layerGroup of polylines (see the FRAME_* constants above for
+        // why this is safe from the old pole/antimeridian bug). Small
+        // degree labels are ordinary lat/lng-anchored markers, the same
+        // technique already used for country name labels - their font
+        // stays a fixed screen size while zooming, same as a real map's
+        // printed labels, which is expected (only the compass rose's
+        // overall size needed to scale, not label text).
+        function addGridLabel(group, lat, lon, text) {
+            L.marker([lat, lon], {
+                icon: L.divIcon({ className: 'grid-label', html: text, iconSize: [34, 12] }),
+                interactive: false
+            }).addTo(group);
+        }
+        function formatLon(lon) {
+            const norm = ((lon % 360) + 540) % 360 - 180; // normalize to -180..180
+            if (norm === 0) return '0°'; // prime meridian
+            if (Math.abs(norm) === 180) return '180°'; // antimeridian - NOT the same as 0°
+            return `${Math.abs(norm)}°${norm > 0 ? 'E' : 'W'}`;
+        }
+        function formatLat(lat) {
+            if (lat === 0) return '0°';
+            return `${Math.abs(lat)}°${lat > 0 ? 'N' : 'S'}`;
+        }
+        function buildMapFrame() {
+            const group = L.layerGroup();
+            const outerStyle = { color: FRAME_COLOR, weight: 2, opacity: 0.75, interactive: false, fill: false };
+            const innerStyle = { color: FRAME_COLOR, weight: 1, opacity: 0.75, interactive: false, fill: false };
+            const gridStyle = { color: FRAME_COLOR, weight: 0.6, opacity: 0.4, interactive: false, fill: false };
+
+            // Double-ruled outer border, antique-chart style
+            const outerRing = [
+                [FRAME_LAT_MIN, FRAME_LON_MIN], [FRAME_LAT_MIN, FRAME_LON_MAX],
+                [FRAME_LAT_MAX, FRAME_LON_MAX], [FRAME_LAT_MAX, FRAME_LON_MIN],
+                [FRAME_LAT_MIN, FRAME_LON_MIN]
+            ];
+            L.polyline(outerRing, outerStyle).addTo(group);
+            const inset = 1.2; // degrees
+            const innerRing = [
+                [FRAME_LAT_MIN + inset, FRAME_LON_MIN + inset], [FRAME_LAT_MIN + inset, FRAME_LON_MAX - inset],
+                [FRAME_LAT_MAX - inset, FRAME_LON_MAX - inset], [FRAME_LAT_MAX - inset, FRAME_LON_MIN + inset],
+                [FRAME_LAT_MIN + inset, FRAME_LON_MIN + inset]
+            ];
+            L.polyline(innerRing, innerStyle).addTo(group);
+
+            // Meridians (vertical lines) with longitude labels top & bottom
+            for (let lon = Math.ceil(FRAME_LON_MIN / GRID_LON_STEP) * GRID_LON_STEP; lon < FRAME_LON_MAX; lon += GRID_LON_STEP) {
+                if (lon <= FRAME_LON_MIN) continue;
+                L.polyline([[FRAME_LAT_MIN, lon], [FRAME_LAT_MAX, lon]], gridStyle).addTo(group);
+                addGridLabel(group, FRAME_LAT_MIN - 3, lon, formatLon(lon));
+                addGridLabel(group, FRAME_LAT_MAX + 3, lon, formatLon(lon));
+            }
+            // Parallels (horizontal lines) with latitude labels left & right
+            for (let lat = Math.ceil(FRAME_LAT_MIN / GRID_LAT_STEP) * GRID_LAT_STEP; lat < FRAME_LAT_MAX; lat += GRID_LAT_STEP) {
+                if (lat <= FRAME_LAT_MIN) continue;
+                L.polyline([[lat, FRAME_LON_MIN], [lat, FRAME_LON_MAX]], gridStyle).addTo(group);
+                addGridLabel(group, lat, FRAME_LON_MIN - 6, formatLat(lat));
+                addGridLabel(group, lat, FRAME_LON_MAX + 6, formatLat(lat));
+            }
+            return group;
         }
 
         // Decorative antique-map compass rose. Added to the map with
@@ -1998,10 +2097,10 @@ ${bodyHtml}
 
             // Antique-map dressing, anchored in map space (lat/lng), not
             // screen space, so it pans and zooms together with the map:
-            // a compass rose sitting in open ocean west of South America,
-            // as a real SVG overlay so it scales with the map. (The
-            // decorative frame that used to be drawn here was removed -
-            // it didn't read well as an antique map border.)
+            // a ruled border + lat/long grid (see buildMapFrame), and a
+            // compass rose sitting in open ocean west of South America as
+            // a real SVG overlay so it scales with the map.
+            buildMapFrame().addTo(leafletMap);
             const compassSvgEl = new DOMParser().parseFromString(COMPASS_ROSE_SVG, 'image/svg+xml').documentElement;
             L.svgOverlay(compassSvgEl, [[-30, -110], [-10, -90]], {
                 interactive: false, className: 'compass-rose-overlay'
@@ -2010,7 +2109,10 @@ ${bodyHtml}
             // Applies the current coloring mode with the staggered
             // random-reveal animation, same as clicking Reset view.
             window._applyFilters({ animate: true });
-            leafletMap.fitBounds(worldLayerGroup.getBounds(), { padding: [10, 10] });
+            // Fit to the frame's own bounds (not just the country data) so
+            // the whole antique "map on parchment" - border, grid and all -
+            // is what you see by default, not just the landmasses.
+            leafletMap.fitBounds(FRAME_BOUNDS, { padding: [10, 10] });
         }
 
         // ---------- Step 7: opening a collection ----------
