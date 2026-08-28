@@ -21,6 +21,7 @@
             --text-dim: rgba(226,232,240,0.55);
             --border: rgba(226,232,240,0.15);
             --map-bg: #0b1526;
+            --label-halo: rgba(0,0,0,0.9);
         }
         /* Antique/old-map theme - swaps the same custom properties used
            throughout the collection view, so no other CSS needs to change.
@@ -36,6 +37,7 @@
             --text-dim: rgba(59,42,26,0.55);
             --border: rgba(59,42,26,0.25);
             --map-bg: #e3d5ae;
+            --label-halo: rgba(236,226,200,0.95);
         }
         body {
             font-family: Arial, sans-serif;
@@ -87,9 +89,17 @@
 
         /* ===== Collection view (map/list/search/modal) ===== */
         #collection-view { display: flex; height: 100vh; width: 100vw; position: fixed; top:0; left:0; }
+        /* Desktop: the sidebar is a floating card over the map (not a full-height
+           column) - it takes itself out of the flex layout via position:absolute,
+           so #cv-main automatically expands to fill the whole viewport underneath
+           it. Height is automatic, based on its own content (how many buttons/
+           rows it has), capped so it never runs off the bottom of a short window. */
         #cv-sidebar {
-            width: 230px; flex-shrink: 0; background: var(--bg-solid); color: var(--text);
-            padding: 20px; border-right: 1px solid var(--border); overflow-y: auto;
+            position: absolute; top: 20px; left: 20px; z-index: 500;
+            width: 230px; max-height: calc(100vh - 40px); overflow-y: auto;
+            background: var(--bg-translucent); backdrop-filter: blur(6px); color: var(--text);
+            padding: 20px; border: 1px solid var(--border); border-radius: 10px;
+            box-shadow: 0 4px 30px rgba(0,0,0,0.35);
         }
         #back-btn {
             width: 100%; background: transparent; border: 1px solid var(--border); color: var(--text-dim);
@@ -97,19 +107,22 @@
         }
         #app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 8px; }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
-        #cv-title { font-size: 16px; margin: 0 0 16px 0; color: var(--accent-owned); }
+        #cv-title { font-size: 24px; margin: 0 0 16px 0; color: var(--accent-owned); text-align: center; }
 
-        /* Phones: sidebar becomes a compact bar across the TOP instead of
-           down the side, so it blocks as little of the map as possible */
+        /* Phones: sidebar becomes a compact bar across the TOP instead of a
+           floating card, so it blocks as little of the map as possible */
         @media (max-width: 700px) {
             #collection-view { flex-direction: column; }
             #cv-sidebar {
+                position: static; top: auto; left: auto; max-height: none;
+                box-shadow: none; border-radius: 0; backdrop-filter: none;
+                background: var(--bg-solid);
                 width: 100%; height: auto;
-                border-right: none; border-bottom: 1px solid var(--border);
+                border: none; border-bottom: 1px solid var(--border);
                 display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
                 padding: 8px 10px;
             }
-            #cv-title { font-size: 14px; margin: 0 8px 0 0; flex-shrink: 0; }
+            #cv-title { font-size: 16px; margin: 0 8px 0 0; flex-shrink: 0; }
             #icon-row { margin-bottom: 0; gap: 6px; }
             .icon-btn { width: 30px; height: 30px; font-size: 14px; }
             .search-wrap { margin-bottom: 0; flex: 1 1 140px; min-width: 100px; }
@@ -125,7 +138,7 @@
         .search-wrap { position: relative; margin-bottom: 16px; }
         #search-box, #search-ghost {
             width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
-            font-size: 14px; background: transparent; color: var(--text);
+            font-size: 14px; background: transparent; color: var(--text); text-align: center;
         }
         #search-box { position: relative; z-index: 2; }
         #search-ghost { position: absolute; top: 0; left: 0; background: var(--panel-alt); color: var(--text-dim); pointer-events: none; z-index: 1; }
@@ -136,7 +149,7 @@
         }
         .legend-btn.active { border-color: currentColor; background: rgba(255,255,255,0.08); }
         .legend-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-        #icon-row { display: flex; gap: 8px; margin-bottom: 16px; }
+        #icon-row { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
         .icon-btn {
             width: 34px; height: 34px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
             background: var(--panel-alt); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
@@ -148,7 +161,7 @@
         #map { height: 100%; width: 100%; background: var(--map-bg); }
         .country-label {
             background: transparent; border: none; box-shadow: none; font-size: 11px; font-weight: bold;
-            color: var(--text); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,0.9);
+            color: var(--text); text-shadow: 0 0 3px var(--label-halo), 0 0 3px var(--label-halo);
         }
         .leaflet-container path:focus { outline: none; }
         /* Zoom is available via scroll/pinch already - the +/- buttons are
@@ -201,6 +214,15 @@
             border-radius: 6px; border: 1px solid var(--border); cursor: pointer; padding: 4px;
             display: block;
         }
+        /* Shown over a thumbnail while its image is still downloading -
+           Drive has to serve the full-res file first (see fetchFullImageBlob),
+           which can take a while for a country with many/large photos. */
+        .thumb-spinner {
+            position: absolute; top: 50%; left: 50%; width: 22px; height: 22px;
+            margin: -11px 0 0 -11px; border: 2px solid var(--border); border-top-color: var(--accent-owned);
+            border-radius: 50%; animation: thumb-spin 0.8s linear infinite; pointer-events: none;
+        }
+        @keyframes thumb-spin { to { transform: rotate(360deg); } }
         #enlarge-overlay {
             display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.9); z-index: 2000; text-align: center;
@@ -216,7 +238,7 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">v0.8</div>
+        <div class="app-version">v0.9</div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
@@ -236,13 +258,13 @@
             </div>
             <div class="search-wrap">
                 <input type="text" id="search-ghost" tabindex="-1" disabled>
-                <input type="text" id="search-box" placeholder="Search country" autocomplete="off">
+                <input type="text" id="search-box" placeholder="Search" autocomplete="off">
             </div>
             <div id="map-only-controls">
-                <button id="toggle-names-btn" class="legend-btn">&#127760; Show country names</button>
+                <button id="toggle-names-btn" class="legend-btn">Show country names</button>
             </div>
             <button id="back-btn">&larr; My Collections</button>
-            <div id="app-version">v0.8</div>
+            <div id="app-version">v0.9</div>
         </div>
         <div id="cv-main">
             <div id="map"></div>
@@ -922,12 +944,16 @@
                 const wrapper = document.createElement('div');
                 wrapper.style.cssText = 'position:relative;';
 
+                const spinner = document.createElement('div');
+                spinner.className = 'thumb-spinner';
+                wrapper.appendChild(spinner);
+
                 const el = document.createElement('img');
                 el.onclick = () => { if (!shareSelectMode) showEnlarged(img.id); };
                 wrapper.appendChild(el);
                 getThumbnailBlobUrl(img.id)
-                    .then(url => { el.src = url; })
-                    .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); });
+                    .then(url => { el.src = url; spinner.remove(); })
+                    .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); spinner.remove(); });
 
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
@@ -1035,12 +1061,20 @@
                 const wrapper = document.createElement('div');
                 wrapper.style.cssText = 'display:inline-block;width:110px;margin:4px;vertical-align:top;text-align:center;';
 
+                const imgBox = document.createElement('div');
+                imgBox.style.cssText = 'position:relative;width:90px;height:90px;margin:0 auto;';
+                wrapper.appendChild(imgBox);
+
+                const spinner = document.createElement('div');
+                spinner.className = 'thumb-spinner';
+                imgBox.appendChild(spinner);
+
                 const el = document.createElement('img');
                 el.style.cssText = 'width:90px;height:90px;object-fit:contain;background:rgba(255,255,255,0.06);border-radius:6px;border:1px solid var(--border);padding:2px;';
-                wrapper.appendChild(el);
+                imgBox.appendChild(el);
                 getThumbnailBlobUrl(img.id)
-                    .then(url => { el.src = url; })
-                    .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); el.alt = '⚠'; });
+                    .then(url => { el.src = url; spinner.remove(); })
+                    .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); el.alt = '⚠'; spinner.remove(); });
 
                 const dpad = buildDpad(categoryIndex, posInCategory, categoryLength);
                 const buttons = dpad.querySelectorAll('button');
