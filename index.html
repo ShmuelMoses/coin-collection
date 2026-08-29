@@ -186,6 +186,25 @@
         .icon-btn:hover { border-color: var(--accent-owned); }
         .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
         #cv-main { flex: 1 1 auto; position: relative; min-height: 0; transition: filter 0.2s; }
+        /* Shown only in offline mode, so the reason the editing controls are
+           greyed out is stated rather than left to be guessed at. */
+        #offline-banner {
+            display: none; flex: 0 0 auto;
+            align-items: center; gap: 8px;
+            padding: 7px 16px; font-size: 12px;
+            color: var(--text); background: var(--panel-alt);
+            border-bottom: 1px solid var(--border);
+        }
+        #offline-banner.shown { display: flex; }
+        #offline-banner svg { flex: 0 0 auto; color: var(--accent-none); }
+        /* Anything that would write to Drive, while offline. Kept visible
+           rather than hidden so the app doesn't appear to lose features. */
+        .offline-disabled {
+            opacity: 0.4; pointer-events: none; cursor: not-allowed;
+        }
+        #login-offline-note {
+            font-size: 12px; color: var(--text-dim); margin-top: 14px; line-height: 1.5;
+        }
         #cv-main.dimmed { filter: brightness(0.55); }
         /* Leaflet handles its own pinch/drag gestures here, so the browser's
            native page gestures are suppressed on the map only - rather than
@@ -440,6 +459,10 @@
                 </div>
             </div>
         </div>
+        <div id="offline-banner" role="status">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.7 13.9a5 5 0 0 0-6.6-.7"/><path d="M5 12.5a10 10 0 0 1 5.2-2.7"/><path d="M10.7 5.1A16 16 0 0 1 22 8.8"/><path d="M2 8.8a16 16 0 0 1 3.8-2.4"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+            <span>Offline - showing your last saved copy. Changes are disabled until you sign in.</span>
+        </div>
         <div id="cv-main">
             <div id="map"></div>
             <div id="list-view"></div>
@@ -511,6 +534,10 @@
 
             <h4 class="info-section">Application</h4>
             <dl id="info-app"></dl>
+            <button id="info-signin-btn" class="legend-btn info-action" style="display:none;">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+                <span>Sign in to Google</span>
+            </button>
             <p id="cache-modal-stats">Loading…</p>
             <div id="info-errors"></div>
             <div id="cache-modal-actions">

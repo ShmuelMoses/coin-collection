@@ -6,10 +6,13 @@ import {
 } from './config.js';
 import { initAuth, promptSignIn, trySilentSignIn, clearToken, getAccessToken } from './auth.js';
 import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } from './drive.js';
-import { getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError, releaseModalObjectUrls, thumbErrors } from './cache.js';
+import {
+    getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError,
+    releaseModalObjectUrls, thumbErrors, SNAP, saveSnapshot, readSnapshot
+} from './cache.js';
 import { state, resetCollectionState } from './state.js';
 import { COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount } from './countries.js';
-import { loadLayouts } from './layouts.js';
+import { loadLayouts, resetLayouts } from './layouts.js';
 import { initModal, closeModal, isModalOpen, setModalCollectionName } from './modal.js';
 import { renderList } from './list.js';
 import {
@@ -18,6 +21,7 @@ import {
 } from './map.js';
 import { buildCollectionExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showChoiceDialog } from './dialog.js';
+import { describeError, isNetworkError } from './util.js';
 
 const statusEl = document.getElementById('status');
 const contentEl = document.getElementById('content');
@@ -31,6 +35,27 @@ let currentFolderInfo = null; // {createdTime} for the open collection
 let signedOutShown = false;
 
 // ---------- boot ----------
+// Google's two scripts come from the network, so with no connection they never
+// arrive and `gapi` / `google` are simply not defined. That used to be a dead
+// end: the sign-in button stayed disabled and the app could do nothing, even
+// though every photo was already on the device.
+function googleScriptsPresent() {
+    return typeof gapi !== 'undefined' && typeof google !== 'undefined';
+}
+
+function boot() {
+    if (!googleScriptsPresent() || navigator.onLine === false) {
+        offerOfflineMode(navigator.onLine === false
+            ? 'You appear to be offline.'
+            : "Google's sign-in could not be reached.");
+        // Keep trying in the background: if the connection comes back the
+        // normal sign-in path takes over without a reload.
+        window.addEventListener('online', () => { if (!state.offline) boot(); }, { once: true });
+        return;
+    }
+    loadGapiClient();
+}
+
 function loadGapiClient() {
     gapi.load('client:picker', async () => {
         try {
@@ -47,22 +72,85 @@ function loadGapiClient() {
             trySilentSignIn();
         } catch (err) {
             console.error(err);
-            setStatus('Failed to load Google API: ' + (err.message || JSON.stringify(err)));
+            if (isNetworkError(err)) {
+                offerOfflineMode('Google could not be reached.');
+            } else {
+                setStatus(describeError(err, "Google's API could not be loaded"));
+            }
         }
     });
 }
-window.onload = loadGapiClient;
+window.onload = boot;
 
-document.getElementById('signin-btn').onclick = () => promptSignIn();
+// ---------- offline mode ----------
+// Offered only when there is actually something saved to show; without a
+// snapshot an "offline" button would open an empty app, which is worse than
+// saying plainly that nothing has been saved yet.
+async function offerOfflineMode(reason) {
+    const snap = await readSnapshot(SNAP.collections);
+    const btn = document.getElementById('signin-btn');
+    btn.disabled = false;
+    btn.textContent = 'Sign in with Google';
+
+    if (!snap) {
+        setStatus(reason + ' Nothing has been saved for offline use yet - ' +
+                  'open your collection once while connected.');
+        return;
+    }
+
+    const note = document.createElement('p');
+    note.id = 'login-offline-note';
+    note.textContent = reason + ' You can open the copy saved on this device: ' +
+        'photos already viewed will be there, and nothing can be changed until you sign in.';
+
+    const offlineBtn = document.createElement('button');
+    offlineBtn.className = 'legend-btn';
+    offlineBtn.style.justifyContent = 'center';
+    offlineBtn.textContent = 'Continue without signing in';
+    offlineBtn.onclick = () => enterOfflineMode(snap.value);
+
+    setStatus('');
+    contentEl.appendChild(note);
+    contentEl.appendChild(offlineBtn);
+}
+
+async function enterOfflineMode(collections) {
+    state.offline = true;
+    collectionsState = { fileId: null, collections: collections || [] };
+    document.getElementById('offline-banner').classList.add('shown');
+    setStatus('');
+    await showCollectionsScreen({ fromSnapshot: true });
+}
+
+// Leaving offline mode: a successful sign-in re-reads everything from Drive.
+function leaveOfflineMode() {
+    state.offline = false;
+    document.getElementById('offline-banner').classList.remove('shown');
+    resetLayouts();
+}
+
+// Applies the disabled look to everything that would write to Drive. They stay
+// visible rather than disappearing, so the app doesn't look like it has lost
+// features - the banner explains why they are greyed out.
+function applyOfflineRestrictions() {
+    const ids = ['export-btn', 'delete-collection-btn', 'cache-clear-btn'];
+    ids.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('offline-disabled', state.offline);
+    });
+    const signinBtn = document.getElementById('info-signin-btn');
+    if (signinBtn) signinBtn.style.display = state.offline ? 'flex' : 'none';
+}
 
 async function startSignedInSession() {
     signedOutShown = false;
+    leaveOfflineMode();
     setStatus('Loading your collections...');
     try {
         await showCollectionsScreen();
     } catch (err) {
         console.error(err);
-        setStatus('Error: ' + (err.message || JSON.stringify(err)));
+        setStatus(describeError(err, 'Your collections could not be loaded'));
     }
 }
 
@@ -91,9 +179,14 @@ function reportSignedOut() {
 }
 
 // ---------- collections screen ----------
-async function showCollectionsScreen() {
-    const { fileId, collections } = await loadCollections();
-    collectionsState = { fileId, collections };
+async function showCollectionsScreen(opts) {
+    if (!(opts && opts.fromSnapshot) && !state.offline) {
+        const { fileId, collections } = await loadCollections();
+        collectionsState = { fileId, collections };
+        // Recorded so the list can be shown next time there is no connection.
+        saveSnapshot(SNAP.collections, collections);
+    }
+    const { collections } = collectionsState;
     setStatus('');
 
     contentEl.innerHTML = '';
@@ -125,11 +218,47 @@ async function showCollectionsScreen() {
         contentEl.appendChild(item);
     });
 
+    // Adding a collection needs the Drive picker, so it is not offered offline.
     const addBtn = document.createElement('button');
     addBtn.className = 'primary-btn';
     addBtn.textContent = '+ Add new collection';
     addBtn.onclick = addNewCollection;
+    if (state.offline) addBtn.classList.add('offline-disabled');
     contentEl.appendChild(addBtn);
+
+    if (state.offline) {
+        const note = document.createElement('p');
+        note.id = 'login-offline-note';
+        note.textContent = 'Offline - this is the copy saved on this device. ' +
+            'Sign in to make changes.';
+        contentEl.appendChild(note);
+
+        const signIn = document.createElement('button');
+        signIn.className = 'legend-btn';
+        signIn.style.justifyContent = 'center';
+        signIn.textContent = 'Sign in to Google';
+        signIn.onclick = () => attemptSignInFromOffline();
+        contentEl.appendChild(signIn);
+    }
+}
+
+// Used by both the collections screen and the info panel. If Google's scripts
+// never loaded (the usual offline case) a reload is the only way to get them.
+async function attemptSignInFromOffline() {
+    if (navigator.onLine === false) {
+        await alertDialog('There is still no internet connection.', 'Cannot sign in');
+        return;
+    }
+    if (!googleScriptsPresent()) {
+        // The scripts are fetched by <script> tags at page load; there is no
+        // way to obtain them now except to load the page again.
+        const go = await confirmDialog(
+            'The connection is back. The page needs to reload to sign in. Reload now?',
+            { title: 'Sign in', confirmLabel: 'Reload' });
+        if (go) location.reload();
+        return;
+    }
+    promptSignIn();
 }
 
 function addNewCollection() {
@@ -163,7 +292,7 @@ async function pickerCallback(data) {
         await showCollectionsScreen();
     } catch (err) {
         console.error('Could not save the new collection:', err);
-        setStatus('Could not save that collection: ' + (err.message || err));
+        setStatus(describeError(err, 'That collection could not be saved'));
     }
 }
 
@@ -173,6 +302,24 @@ async function openCollection(col) {
     const p = document.createElement('p');
     p.textContent = `Opening "${col.name}"...`;
     contentEl.appendChild(p);
+
+    if (state.offline) {
+        const snap = await readSnapshot(SNAP.collection(col.id));
+        if (!snap) {
+            contentEl.innerHTML = '';
+            await alertDialog(
+                `"${col.name}" has not been saved for offline use yet. Open it once ` +
+                `while connected and it will be available here afterwards.`,
+                'Not available offline');
+            await showCollectionsScreen({ fromSnapshot: true });
+            return;
+        }
+        setStatus('');
+        currentFolderInfo = snap.folderInfo || null;
+        await showCollectionView(col, snap.value);
+        return;
+    }
+
     setStatus('Reading folders and images...');
     // Warmed up but never awaited, and its rejection is swallowed here: this
     // promise is memoised and shared by every thumbnail, so an unhandled
@@ -191,14 +338,40 @@ async function openCollection(col) {
         ]);
         currentFolderInfo = folderInfo;
         setStatus('');
+        // Everything needed to show this collection again with no connection,
+        // including the folder date the info panel displays.
+        saveSnapshot(SNAP.collection(col.id), countries, { folderInfo });
         await showCollectionView(col, countries);
     } catch (err) {
         console.error(err);
         contentEl.innerHTML = '';
         const e = document.createElement('p');
         e.style.color = 'var(--accent-none)';
-        e.textContent = 'Error: ' + (err.message || JSON.stringify(err));
+        e.textContent = describeError(err, `"${col.name}" could not be opened`);
         contentEl.appendChild(e);
+        // A network failure is exactly when the saved copy is worth offering.
+        if (isNetworkError(err)) {
+            const snap = await readSnapshot(SNAP.collection(col.id));
+            if (snap) {
+                const useCache = document.createElement('button');
+                useCache.className = 'legend-btn';
+                useCache.style.justifyContent = 'center';
+                useCache.textContent = 'Open the saved copy instead';
+                useCache.onclick = async () => {
+                    state.offline = true;
+                    document.getElementById('offline-banner').classList.add('shown');
+                    currentFolderInfo = snap.folderInfo || null;
+                    await showCollectionView(col, snap.value);
+                };
+                contentEl.appendChild(useCache);
+            }
+        }
+        const back = document.createElement('button');
+        back.className = 'legend-btn';
+        back.style.justifyContent = 'center';
+        back.textContent = 'Back to collections';
+        back.onclick = () => showCollectionsScreen({ fromSnapshot: state.offline });
+        contentEl.appendChild(back);
     }
 }
 
@@ -223,6 +396,7 @@ async function showCollectionView(col, countries) {
     document.getElementById('cv-title').textContent = col.name;
 
     renderViewToggle();
+    applyOfflineRestrictions();
     await initMap();
     renderList(); // after initMap, so countryNameLookup is populated
     history.pushState({ screen: 'collection' }, '');
@@ -238,7 +412,7 @@ function goBackToCollections(fromPopstate) {
     document.getElementById('collection-view').style.display = 'none';
     document.getElementById('login-box').style.display = 'block';
     contentEl.innerHTML = '<p>Loading your collections...</p>';
-    showCollectionsScreen();
+    showCollectionsScreen({ fromSnapshot: state.offline });
     if (!fromPopstate) {
         state.suppressNextPopstate = true;
         history.back();
@@ -403,7 +577,7 @@ async function exportWholeCollection() {
         progress.close();
         if (isExportCancelled(err)) return; // the user asked to stop
         console.error('Collection share failed:', err);
-        await alertDialog('Could not build that file: ' + (err.message || err), 'Share failed');
+        await alertDialog(describeError(err, 'That file could not be built'), 'Share failed');
     }
 }
 
@@ -434,7 +608,7 @@ async function removeOpenCollection() {
         goBackToCollections(false);
     } catch (err) {
         console.error('Could not remove the collection:', err);
-        await alertDialog('Could not remove that collection: ' + (err.message || err), 'Remove failed');
+        await alertDialog(describeError(err, 'That collection could not be removed'), 'Remove failed');
     }
 }
 
@@ -498,10 +672,20 @@ async function openInfoModal() {
     const appDl = document.getElementById('info-app');
     appDl.innerHTML = '';
     fact(appDl, 'Version', APP_VERSION);
+    fact(appDl, 'Status', state.offline ? 'Offline - saved copy, changes disabled' : 'Signed in');
+    if (state.offline) {
+        const snap = await readSnapshot(SNAP.collections);
+        if (snap && snap.savedAt) fact(appDl, 'Last synced', formatDate(new Date(snap.savedAt).toISOString()));
+    }
 
     renderThumbErrors();
+    applyOfflineRestrictions();
 
     const statsEl = document.getElementById('cache-modal-stats');
+    if (state.offline) {
+        statsEl.textContent = 'Thumbnail cache details need a connection.';
+        return;
+    }
     statsEl.textContent = 'Loading cache info…';
     try {
         const index = await getDriveThumbIndex();
@@ -516,7 +700,7 @@ async function openInfoModal() {
             statsEl.appendChild(warn);
         }
     } catch (err) {
-        statsEl.textContent = 'Could not read cache info: ' + (err.message || err);
+        statsEl.textContent = describeError(err, 'The cache details could not be read');
     }
 }
 
@@ -530,6 +714,7 @@ document.getElementById('cache-modal-backdrop').onclick = closeCacheModal;
 document.getElementById('cache-close-btn').onclick = closeCacheModal;
 document.getElementById('export-btn').onclick = exportWholeCollection;
 document.getElementById('delete-collection-btn').onclick = removeOpenCollection;
+document.getElementById('info-signin-btn').onclick = () => { closeCacheModal(); attemptSignInFromOffline(); };
 document.getElementById('cache-clear-btn').onclick = async () => {
     const ok = await confirmDialog(
         "Delete all cached thumbnails from Drive? They'll be regenerated automatically the next time each photo is viewed.",
@@ -542,7 +727,7 @@ document.getElementById('cache-clear-btn').onclick = async () => {
         await clearDriveThumbCache();
         statsEl.textContent = 'Cache cleared.';
     } catch (err) {
-        statsEl.textContent = 'Failed to clear cache: ' + (err.message || err);
+        statsEl.textContent = describeError(err, 'The cache could not be cleared');
     }
 };
 

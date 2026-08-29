@@ -93,6 +93,37 @@ const cacheDelete = key => storeDelete('images', key);
 export const getMeta = key => storeGet('meta', key);
 export const setMeta = (key, value) => storePut('meta', key, value);
 
+// ---------- offline snapshots ----------
+// The photos have always been cached locally, but everything ABOUT them - which
+// collections exist, which countries are in one, the saved categories - lived
+// only in Drive. So with no connection there was nothing to show even though
+// the images were sitting on the device. These snapshots are written on every
+// successful online load and are what offline mode reads from.
+export const SNAP = {
+    collections: 'snapshot:collections',
+    layouts: 'snapshot:layouts',
+    collection: id => 'snapshot:collection:' + id,
+};
+
+export async function saveSnapshot(key, value, extra) {
+    try {
+        await setMeta(key, Object.assign({ savedAt: Date.now(), value }, extra || {}));
+    } catch (err) {
+        // Never let a failed snapshot break the online path it piggybacks on.
+        console.warn('Could not save offline snapshot', key, err);
+    }
+}
+
+export async function readSnapshot(key) {
+    try {
+        const row = await getMeta(key);
+        return row && 'value' in row ? row : null;
+    } catch (err) {
+        console.warn('Could not read offline snapshot', key, err);
+        return null;
+    }
+}
+
 // Rejects instead of hanging. Several links in the thumbnail chain (an
 // IndexedDB transaction, a fetch on a flaky mobile connection) can in practice
 // settle neither way; without this the UI shows a spinner forever and there is

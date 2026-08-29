@@ -2,7 +2,7 @@
 
 import { state } from './state.js';
 import { COUNTRY_NAMES } from './countries.js';
-import { applyOrder } from './util.js';
+import { applyOrder, describeError } from './util.js';
 import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
 import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty } from './layouts.js';
 import { buildCountryExport, shareOrDownloadFile, isExportCancelled } from './export.js';
@@ -33,6 +33,8 @@ function currentCollectionName() { return collectionName; }
 
 function updateHeaderIcons() {
     const idle = !shareSelectMode && !organizeMode;
+    // Organising writes categories back to Drive, so it is unavailable offline.
+    document.getElementById('organize-icon-btn').classList.toggle('offline-disabled', state.offline);
     document.getElementById('share-icon-btn').style.display = idle ? 'flex' : 'none';
     document.getElementById('share-confirm-icon-btn').style.display = shareSelectMode ? 'flex' : 'none';
     document.getElementById('share-cancel-icon-btn').style.display = shareSelectMode ? 'flex' : 'none';
@@ -420,7 +422,7 @@ export function initModal() {
             await saveLayoutsToDrive();
         } catch (err) {
             console.error('Could not save categories:', err);
-            await alertDialog('Could not save those categories: ' + (err.message || err), 'Save failed');
+            await alertDialog(describeError(err, 'Those categories could not be saved'), 'Save failed');
             return; // stay in organise mode so the work isn't lost
         }
         organizeMode = false;
@@ -457,7 +459,7 @@ export function initModal() {
             progress.close();
             if (isExportCancelled(err)) return; // the user asked to stop
             console.error('Share failed:', err);
-            await alertDialog('Could not build that file: ' + (err.message || err), 'Share failed');
+            await alertDialog(describeError(err, 'That file could not be built'), 'Share failed');
         } finally {
             btn.style.opacity = '1';
             btn.style.pointerEvents = 'auto';

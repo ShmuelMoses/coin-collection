@@ -1,0 +1,11 @@
+# Vendored third-party files, committed exactly as downloaded from unpkg.
+# Without this git normalises their line endings and then reports every single
+# line as modified forever, which buries real changes in `git status`.
+leaflet.js   -text
+leaflet.css  -text
+
+# Everything written for this project uses LF.
+*.html text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.mjs  text eol=lf

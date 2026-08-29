@@ -36,3 +36,28 @@ export function applyOrder(orderIds, images) {
     const missing = images.filter(img => !orderIds.includes(img.id));
     return ordered.concat(missing);
 }
+
+// ---------- network failures ----------
+// A dropped connection surfaces in several different shapes: fetch rejects with
+// a TypeError ("Failed to fetch" / "NetworkError"), gapi rejects with status 0
+// or -1, and the browser may simply report itself offline. All of them mean the
+// same thing to the person using the app, and all of them used to be shown as a
+// raw technical string.
+export function isNetworkError(err) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+    if (!err) return false;
+    const status = err.status ?? (err.result && err.result.error && err.result.error.code);
+    if (status === 0 || status === -1) return true;
+    const msg = String(err.message || err);
+    return err.name === 'TypeError' && /fetch|network/i.test(msg)
+        || /failed to fetch|networkerror|network request failed|err_internet|offline/i.test(msg);
+}
+
+// One sentence a person can act on, instead of the exception's own wording.
+export function describeError(err, whatFailed) {
+    if (isNetworkError(err)) {
+        return `${whatFailed} because there is no internet connection. ` +
+               `Your collection is still here - reconnect and try again.`;
+    }
+    return `${whatFailed}: ${(err && err.message) ? err.message : String(err)}`;
+}

@@ -223,8 +223,9 @@ export function showChoiceDialog(options) {
 }
 
 // A dialog that stays open while something runs, with a live status line and
-// an optional Cancel. Returns { setMessage, close, signal }: `signal.cancelled`
-// flips to true when Cancel is pressed, and long jobs check it between steps.
+// an optional Cancel. Returns { setMessage, close, signal } where `signal` is a
+// real AbortSignal - long jobs both check `signal.aborted` between steps AND
+// hand the signal to fetch, so Cancel tears down the transfer in flight.
 export function showProgressDialog(title, message, opts) {
     const o = opts || {};
     const backdrop = ensureBackdrop();

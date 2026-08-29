@@ -3,6 +3,7 @@
 
 import { LAYOUTS_FILENAME } from './config.js';
 import { readJsonFromAppData, saveJsonToAppData } from './drive.js';
+import { SNAP, saveSnapshot, readSnapshot } from './cache.js';
 import { state } from './state.js';
 
 let layoutsCache = null; // {fileId, data: {collectionId: {countryCode: {...}}}}
@@ -22,8 +23,20 @@ async function readLayoutsFile() {
 
 export async function loadLayouts() {
     if (layoutsCache) return layoutsCache;
+    if (state.offline) {
+        // Offline: whatever was saved on the last successful online load.
+        const snap = await readSnapshot(SNAP.layouts);
+        layoutsCache = { fileId: null, data: (snap && snap.value) || {} };
+        return layoutsCache;
+    }
     layoutsCache = await readLayoutsFile();
+    saveSnapshot(SNAP.layouts, layoutsCache.data); // for the next offline visit
     return layoutsCache;
+}
+
+export function resetLayouts() {
+    layoutsCache = null;
+    dirtyLayoutKeys.clear();
 }
 
 export function getCountryLayout(code) {
@@ -46,6 +59,7 @@ export function getCountryLayout(code) {
 // it, so two devices editing different countries no longer destroy each
 // other's work.
 export async function saveLayoutsToDrive() {
+    if (state.offline) throw new Error('Categories cannot be saved while offline.');
     const localData = layoutsCache.data;
 
     let remote;
@@ -71,5 +85,6 @@ export async function saveLayoutsToDrive() {
 
     const newId = await saveJsonToAppData(LAYOUTS_FILENAME, remote.fileId, merged);
     layoutsCache = { fileId: remote.fileId || newId, data: merged };
+    saveSnapshot(SNAP.layouts, merged);
     dirtyLayoutKeys.clear();
 }

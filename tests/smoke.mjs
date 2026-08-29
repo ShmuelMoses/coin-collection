@@ -69,6 +69,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cache-modal-backdrop', 'cache-modal', 'cache-modal-stats', 'cache-modal-actions',
     'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
     'info-collection', 'info-app', 'info-errors', 'delete-collection-btn',
+    'offline-banner', 'info-signin-btn',
 ].forEach(id => mkEl(id));
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
@@ -504,6 +505,44 @@ console.log('\nA stuck photo must not wedge the queue');
         fourth.value !== 'STILL-PENDING' || fourth.status === 'rejected',
         'the 4th photo was still pending - the queue was wedged');
     check('the stalled ones did not consume the whole run', Date.now() - started < 3000);
+}
+
+console.log('\nOffline mode');
+{
+    const util = await import('./js/util.js');
+    const cache = await import('./js/cache.js');
+    const layouts = await import('./js/layouts.js');
+
+    // A dropped connection arrives in several shapes; all must be recognised.
+    const tErr = new TypeError('Failed to fetch');
+    check('fetch TypeError is a network error', util.isNetworkError(tErr));
+    check('gapi status 0 is a network error', util.isNetworkError({ status: 0 }));
+    check('a 404 is NOT a network error', !util.isNetworkError({ status: 404 }));
+    check('the message names the connection, not the exception',
+        /no internet connection/i.test(util.describeError(tErr, 'It failed')),
+        util.describeError(tErr, 'It failed'));
+    check('a non-network error keeps its own wording',
+        /Boom/.test(util.describeError(new Error('Boom'), 'It failed')));
+
+    // Snapshots are what make offline possible at all.
+    const store = new Map();
+    const origSet = cache.setMeta, origGet = cache.getMeta;
+    check('snapshot keys are namespaced per collection',
+        cache.SNAP.collection('abc') === 'snapshot:collection:abc', cache.SNAP.collection('abc'));
+    check('there are snapshot keys for the list and the layouts',
+        !!cache.SNAP.collections && !!cache.SNAP.layouts);
+
+    // Offline, layouts come from the snapshot and writing is refused outright
+    // rather than failing halfway through a Drive call.
+    state.state.offline = true;
+    layouts.resetLayouts();
+    let refused = false;
+    try { await layouts.saveLayoutsToDrive(); } catch (e) { refused = /offline/i.test(e.message); }
+    check('saving categories is refused while offline', refused);
+    const l = await layouts.loadLayouts();
+    check('layouts load offline without touching Drive', !!l && typeof l.data === 'object');
+    state.state.offline = false;
+    layouts.resetLayouts();
 }
 
 console.log('\nDate formatting');

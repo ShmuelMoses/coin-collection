@@ -31,6 +31,11 @@ export const state = {
     // history.back(), the handler then runs, sees no modal open any more, and
     // "goes back" again - landing on the collections list.
     suppressNextPopstate: false,
+    // True when the app was opened WITHOUT signing in, reading everything from
+    // the local snapshots. Nothing can be written to Drive in this mode, so
+    // every control that would change something is disabled rather than left
+    // to fail at the moment it is pressed.
+    offline: false,
 };
 
 export function resetCollectionState() {
