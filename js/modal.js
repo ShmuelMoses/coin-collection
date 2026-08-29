@@ -5,7 +5,7 @@ import { COUNTRY_NAMES } from './countries.js';
 import { applyOrder } from './util.js';
 import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
 import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty } from './layouts.js';
-import { buildCountryExport, shareOrDownloadFile } from './export.js';
+import { buildCountryExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, showProgressDialog } from './dialog.js';
 
 const modal = document.getElementById('modal');
@@ -24,6 +24,12 @@ let editingCategoryIndex = null;
 const HEADING_STYLE = 'color:var(--text-dim);font-size:14px;font-weight:normal;margin:16px 0 8px 0;text-align:center;border-top:1px solid var(--border);padding-top:12px;';
 
 export function isModalOpen() { return modal.style.display === 'block'; }
+
+// Set by app.js when a collection opens, so a shared country file can be named
+// after the collection it came from.
+let collectionName = '';
+export function setModalCollectionName(name) { collectionName = name || ''; }
+function currentCollectionName() { return collectionName; }
 
 function updateHeaderIcons() {
     const idle = !shareSelectMode && !organizeMode;
@@ -434,11 +440,12 @@ export function initModal() {
         const btn = document.getElementById('share-confirm-icon-btn');
         btn.style.opacity = '0.4';
         btn.style.pointerEvents = 'none';
-        const progress = showProgressDialog('Preparing', 'Collecting photos…');
+        const progress = showProgressDialog('Preparing', 'Collecting photos…', { cancellable: true });
         try {
-            const result = await buildCountryExport(code, selectedForShare, (done, total) => {
-                progress.setMessage(`Preparing photo ${done} of ${total}…`);
-            });
+            const result = await buildCountryExport(
+                code, selectedForShare,
+                (done, total) => progress.setMessage(`Preparing photo ${done} of ${total}…`),
+                progress.signal, currentCollectionName());
             progress.close();
             if (!result) {
                 await alertDialog('None of the selected photos could be prepared.');
@@ -448,6 +455,7 @@ export function initModal() {
             setShareSelectMode(false);
         } catch (err) {
             progress.close();
+            if (isExportCancelled(err)) return; // the user asked to stop
             console.error('Share failed:', err);
             await alertDialog('Could not build that file: ' + (err.message || err), 'Share failed');
         } finally {

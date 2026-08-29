@@ -242,7 +242,12 @@ export function showProgressDialog(title, message, opts) {
     p.textContent = message || '';
     box.append(h, p);
 
-    const signal = { cancelled: false };
+    // A real AbortController, not just a flag. A flag is only noticed BETWEEN
+    // steps, so on a slow connection "Cancelling…" sat there until the download
+    // in flight finished or timed out - up to two minutes. Aborting tears down
+    // the request itself, so Cancel takes effect at once.
+    const controller = new AbortController();
+    const signal = controller.signal;
 
     if (o.cancellable) {
         const actions = document.createElement('div');
@@ -251,7 +256,7 @@ export function showProgressDialog(title, message, opts) {
         cancelBtn.className = 'legend-btn';
         cancelBtn.textContent = o.cancelLabel || 'Cancel';
         cancelBtn.onclick = () => {
-            signal.cancelled = true;
+            controller.abort();
             cancelBtn.disabled = true;
             p.textContent = 'Cancelling…';
         };
@@ -266,7 +271,7 @@ export function showProgressDialog(title, message, opts) {
 
     return {
         signal,
-        setMessage: text => { if (!signal.cancelled) p.textContent = text; },
+        setMessage: text => { if (!signal.aborted) p.textContent = text; },
         close: () => { backdrop.classList.remove('open'); backdrop.innerHTML = ''; }
     };
 }

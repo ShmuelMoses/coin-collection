@@ -79,13 +79,23 @@ async function encodeToBudget(fullBlob, maxBytes) {
     return best;
 }
 
-// `budgetBytes` is the per-image ceiling. `signal` lets a long export be
-// stopped: it is checked between images, so cancelling takes effect within one
-// photo rather than at the end.
+// `budgetBytes` is the per-image ceiling. `signal` is an AbortSignal: it is
+// both checked between photos AND handed to the download itself, so pressing
+// Cancel tears down the transfer in flight instead of waiting for it.
 //
 // Concurrency is deliberately low for the same reason as the thumbnail queue -
 // decoding several full-resolution photos at once is what exhausts a phone.
 const EXPORT_CONCURRENCY = 2;
+
+function abortError() {
+    const e = new Error('cancelled');
+    e.name = 'AbortError';
+    return e;
+}
+function isAbort(err) {
+    return !!err && (err.name === 'AbortError' || err.message === 'cancelled');
+}
+export { isAbort as isExportCancelled };
 
 async function encodeImages(images, budgetBytes, onProgress, signal) {
     const dataUrlById = {};
@@ -94,14 +104,14 @@ async function encodeImages(images, budgetBytes, onProgress, signal) {
 
     async function worker() {
         while (next < images.length) {
-            if (signal && signal.cancelled) throw new Error('cancelled');
+            if (signal && signal.aborted) throw abortError();
             const img = images[next++];
             try {
-                const fullBlob = await fetchFullImageBlob(img.id);
+                const fullBlob = await fetchFullImageBlob(img.id, signal);
                 const smallBlob = await encodeToBudget(fullBlob, budgetBytes);
                 if (smallBlob) dataUrlById[img.id] = await blobToBase64(smallBlob);
             } catch (err) {
-                if (err && err.message === 'cancelled') throw err;
+                if (isAbort(err) || (signal && signal.aborted)) throw abortError();
                 console.warn('Skipping image that could not be exported:', img.id, err);
             }
             done++;
@@ -128,6 +138,19 @@ function groupsToHtml(groups, dataUrlById, headingTag) {
     return html;
 }
 
+// Filenames carry the collection name and the export date, so a folder of
+// these stays sortable and you can tell two exports of the same thing apart.
+// ISO order (YYYY-MM-DD) because it sorts correctly as text.
+function exportDateStamp() {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function safeName(text) {
+    return String(text).trim().replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, '_') || 'collection';
+}
+
 function wrapDocument(title, bodyHtml) {
     return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -141,7 +164,7 @@ ${bodyHtml}
 // ---------- one country ----------
 export const DEFAULT_IMAGE_BUDGET = 512 * 1024; // 0.5 MB per photo
 
-export async function buildCountryExport(code, selectedIds, onProgress, signal) {
+export async function buildCountryExport(code, selectedIds, onProgress, signal, collectionName) {
     const groups = orderedGroupsFor(code)
         .map(g => ({ heading: g.heading, images: g.images.filter(img => selectedIds.has(img.id)) }))
         .filter(g => g.images.length > 0);
@@ -151,9 +174,10 @@ export async function buildCountryExport(code, selectedIds, onProgress, signal) 
     const dataUrlById = await encodeImages(all, DEFAULT_IMAGE_BUDGET, onProgress, signal);
     const countryName = COUNTRY_NAMES[code] || code;
     const body = `<h1>${escapeHtml(countryName)}</h1>` + groupsToHtml(groups, dataUrlById, 'h3');
+    const prefix = collectionName ? safeName(collectionName) + '_' : '';
     return {
         blob: new Blob([wrapDocument(`${countryName} - Banknotes & Coins`, body)], { type: 'text/html' }),
-        filename: `${countryName.replace(/\s+/g, '_')}.html`
+        filename: `${prefix}${safeName(countryName)}_${exportDateStamp()}.html`
     };
 }
 
@@ -205,7 +229,7 @@ export async function buildCollectionExport(collectionName, budgetBytes, onProgr
     const blob = new Blob([wrapDocument(collectionName, body)], { type: 'text/html' });
     return {
         blob,
-        filename: `${collectionName.replace(/\s+/g, '_')}_collection.html`,
+        filename: `${safeName(collectionName)}_${exportDateStamp()}.html`,
         imageCount: allImages.length,
         countryCount: perCountry.length,
         bytes: blob.size

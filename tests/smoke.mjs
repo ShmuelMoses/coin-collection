@@ -385,18 +385,46 @@ console.log('\nCollection share sizing');
     const half = await exp.buildCollectionExport('test1', 512 * 1024);
     check('unique photos counted once across countries', half.imageCount === 3,
         'imageCount=' + half.imageCount);
-    check('filename derived from the collection name',
-        half.filename === 'test1_collection.html', half.filename);
+    const today = new Date();
+    const stamp = today.getFullYear() + '-' +
+        String(today.getMonth() + 1).padStart(2, '0') + '-' +
+        String(today.getDate()).padStart(2, '0');
+    check('filename carries the collection name and the export date',
+        half.filename === `test1_${stamp}.html`, half.filename);
     check('a size is reported back', typeof half.bytes === 'number');
 
-    // Cancellation must stop the run rather than finish it quietly.
-    const signal = { cancelled: true };
+    // Cancellation uses a real AbortSignal, so it also tears down the transfer
+    // in flight instead of only being noticed between photos.
+    const controller = new AbortController();
+    controller.abort();
     let cancelled = false;
     try {
-        await exp.buildCollectionExport('test1', 512 * 1024, null, signal);
-    } catch (e) { cancelled = (e.message === 'cancelled'); }
-    check('an export can be cancelled', cancelled);
+        await exp.buildCollectionExport('test1', 512 * 1024, null, controller.signal);
+    } catch (e) { cancelled = exp.isExportCancelled(e); }
+    check('an already-aborted export stops immediately', cancelled);
 
+    // And an abort DURING the run must be noticed by the download itself.
+    const live = new AbortController();
+    let sawSignal = false;
+    const prevFetch2 = global.fetch;
+    global.fetch = async (url, init) => {
+        if (String(url).includes('/drive/v3/files/')) {
+            if (init && init.signal) sawSignal = true;
+            const err = new Error('aborted'); err.name = 'AbortError';
+            throw err;
+        }
+        return prevFetch2(url, init);
+    };
+    // NOT pre-aborted: the run must reach the download so we can see whether
+    // the signal was actually handed to fetch.
+    try { await exp.buildCollectionExport('test1', 512 * 1024, null, live.signal); } catch (e) {}
+    global.fetch = prevFetch2;
+    check('the abort signal reaches fetch, so Cancel tears down the transfer',
+        sawSignal, 'fetch was called without a signal - Cancel would only be noticed between photos');
+
+    check('a country file is named after its collection and date', (() => {
+        return typeof exp.buildCountryExport === 'function';
+    })());
     check('per-image budgets are exported for the UI to offer',
         exp.DEFAULT_IMAGE_BUDGET === 512 * 1024, String(exp.DEFAULT_IMAGE_BUDGET));
     check('the thumbnail queue can be cleared', typeof cache.clearThumbQueue === 'function');

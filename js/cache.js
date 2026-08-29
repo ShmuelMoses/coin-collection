@@ -124,7 +124,7 @@ function noteThumbError(stage, fileId, err) {
 // space hogs, so we stop caching them rather than fail on every write.
 let skipFullImageCaching = false;
 
-export async function fetchFullImageBlob(fileId) {
+export async function fetchFullImageBlob(fileId, signal) {
     const cacheKey = fileId + '_full';
 
     // A broken or full IndexedDB must cost SPEED, not function. This read used
@@ -142,7 +142,7 @@ export async function fetchFullImageBlob(fileId) {
         noteThumbError('full-cache-read', fileId, err);
     }
 
-    const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, { signal });
     const blob = await resp.blob();
     if (!blob.type.startsWith('image/')) {
         const text = await blob.text().catch(() => '');
@@ -378,12 +378,18 @@ async function uploadThumbnailToDrive(fileId, thumbBlob) {
 // can shorten them). They are deliberately not generous: on a phone a stalled
 // stage that takes a minute to give up is indistinguishable from a hang, and
 // while it waits it is occupying one of the few queue slots.
+// The download bound must fit the SLOWEST realistic case, not the typical one.
+// It was briefly 30s, which is under water on mobile data: a 12 MB photo at
+// three concurrent downloads on a ~1.4 MB/s connection needs about 26 seconds
+// of transfer alone, and a larger one needs more. That produced "full image
+// download timed out after 30s" for photos that were merely slow. Being
+// generous here is safe now that a stuck job can no longer wedge the queue.
 export const TIMEOUTS = {
     cacheRead: 8000,
     index: 10000,
-    download: 30000,
-    resize: 20000,
-    job: 55000,   // outer bound on download + decode + encode together
+    download: 120000,
+    resize: 30000,
+    job: 160000,  // outer bound on download + decode + encode together
 };
 
 // Generating a thumbnail from the original is EXPENSIVE: it downloads several
@@ -394,6 +400,10 @@ export const TIMEOUTS = {
 // and the requests would crawl until they hit the timeout and reported
 // "Could not load". Reading an ALREADY cached thumbnail is cheap and skips this
 // queue entirely, which is why previously-cached countries kept working.
+// Fewer at once is FASTER on a phone, not slower: the connection is the
+// bottleneck, so three downloads split the same bandwidth three ways and each
+// takes three times as long to arrive. Two keeps the pipe busy while letting
+// each photo finish soon enough to appear one after another.
 const THUMB_CONCURRENCY =
     (navigator.deviceMemory && navigator.deviceMemory <= 4) ? 2 : 3;
 
@@ -488,8 +498,17 @@ async function getThumbnailBlobUrl(fileId) {
     //    a couple of these heavy jobs are ever in flight at once.
     return queueThumbJob(async () => {
         try {
-            const fullBlob = await withTimeout(
-                fetchFullImageBlob(fileId), TIMEOUTS.download, 'full image download');
+            let fullBlob;
+            try {
+                fullBlob = await withTimeout(
+                    fetchFullImageBlob(fileId), TIMEOUTS.download, 'full image download');
+            } catch (err) {
+                // Mobile transfers drop routinely; one retry costs little and
+                // rescues most of them.
+                noteThumbError('download-retry', fileId, err);
+                fullBlob = await withTimeout(
+                    fetchFullImageBlob(fileId), TIMEOUTS.download, 'full image download (retry)');
+            }
             const thumbBlob = await resizeImageBlob(fullBlob, 320);
             cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
             uploadThumbnailToDrive(fileId, thumbBlob); // background, never awaited

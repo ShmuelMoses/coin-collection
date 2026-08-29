@@ -10,13 +10,13 @@ import { getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError, release
 import { state, resetCollectionState } from './state.js';
 import { COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount } from './countries.js';
 import { loadLayouts } from './layouts.js';
-import { initModal, closeModal, isModalOpen } from './modal.js';
+import { initModal, closeModal, isModalOpen, setModalCollectionName } from './modal.js';
 import { renderList } from './list.js';
 import {
     initMap, destroyMap, applyFilters, fitFrameToViewport,
     focusOnMatches, invalidateMapSize
 } from './map.js';
-import { buildCollectionExport, shareOrDownloadFile } from './export.js';
+import { buildCollectionExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showChoiceDialog } from './dialog.js';
 
 const statusEl = document.getElementById('status');
@@ -205,6 +205,7 @@ async function openCollection(col) {
 async function showCollectionView(col, countries) {
     currentCollection = col;
     state.currentCollectionId = col.id;
+    setModalCollectionName(col.name);
     await loadLayouts();
 
     state.cvCountries = countries;
@@ -233,6 +234,7 @@ function goBackToCollections(fromPopstate) {
     resetCollectionState();
     currentCollection = null;
     currentFolderInfo = null;
+    setModalCollectionName('');
     document.getElementById('collection-view').style.display = 'none';
     document.getElementById('login-box').style.display = 'block';
     contentEl.innerHTML = '<p>Loading your collections...</p>';
@@ -399,7 +401,7 @@ async function exportWholeCollection() {
         await shareOrDownloadFile(result.blob, result.filename);
     } catch (err) {
         progress.close();
-        if (err && err.message === 'cancelled') return; // the user asked to stop
+        if (isExportCancelled(err)) return; // the user asked to stop
         console.error('Collection share failed:', err);
         await alertDialog('Could not build that file: ' + (err.message || err), 'Share failed');
     }

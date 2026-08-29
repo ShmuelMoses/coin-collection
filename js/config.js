@@ -17,7 +17,7 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
 // Single source of truth for the version: written into the login screen at
 // startup, and shown in the info panel behind the sidebar's "!" button.
-export const APP_VERSION = '2.12';
+export const APP_VERSION = '2.13';
 
 // Leaflet styles its layers from JavaScript, so these have to exist as JS
 // values - but they are READ FROM the :root custom properties rather than
