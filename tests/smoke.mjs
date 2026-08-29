@@ -189,8 +189,14 @@ global.gapi = {
         } },
     },
 };
+// The token client hands back a token immediately, so withAuth() proceeds to
+// the actual request instead of waiting on a refresh that never arrives.
 global.google = {
-    accounts: { oauth2: { initTokenClient: () => ({ requestAccessToken() {} }) } },
+    accounts: { oauth2: { initTokenClient: (cfg) => ({
+        requestAccessToken() {
+            setTimeout(() => cfg.callback({ access_token: 'test-token', expires_in: 3600 }), 0);
+        }
+    }) } },
     picker: { PickerBuilder: class {}, DocsView: class {}, ViewId: {}, Action: {} },
 };
 
@@ -369,34 +375,67 @@ check('shared note folded into both countries',
 console.log('\nCollection share sizing');
 {
     const exp = await import('./js/export.js');
-    // Two countries, three unique photos, one of them shared between them.
+    const cache = await import('./js/cache.js');
     state.state.cvCountryMap = countries.buildCountryMap([
         { code: 'FRA', images: [{ id: 'a', name: 'a' }, { id: 'shared', name: 's' }] },
         { code: 'DEU', images: [{ id: 'b', name: 'b' }, { id: 'shared', name: 's' }] },
     ]);
     state.state.collectionData = { FRA: { count: 2 }, DEU: { count: 2 } };
 
-    const passes = [];
-    let bytesPerImage = 400000; // pretend each encoded photo is this big
-    global.__encodeSpy = null;
-    // Stub the image pipeline: blobToBase64 length drives the file size.
-    const origFetch = global.fetch;
-    global.fetch = origFetch;
+    const half = await exp.buildCollectionExport('test1', 512 * 1024);
+    check('unique photos counted once across countries', half.imageCount === 3,
+        'imageCount=' + half.imageCount);
+    check('filename derived from the collection name',
+        half.filename === 'test1_collection.html', half.filename);
+    check('a size is reported back', typeof half.bytes === 'number');
 
-    const full = await exp.buildCollectionExport('test1', { mode: 'full' });
-    check('full-size export includes every unique photo once',
-        (full.blob.size > 0) && full.imageCount === 3, 'imageCount=' + full.imageCount);
-    check('full size uses factor 1 (no re-encode)', full.factor === 1, String(full.factor));
+    // Cancellation must stop the run rather than finish it quietly.
+    const signal = { cancelled: true };
+    let cancelled = false;
+    try {
+        await exp.buildCollectionExport('test1', 512 * 1024, null, signal);
+    } catch (e) { cancelled = (e.message === 'cancelled'); }
+    check('an export can be cancelled', cancelled);
 
-    const tenth = await exp.buildCollectionExport('test1', { mode: 'fraction', factor: 10 });
-    check('a tenth uses factor 10', tenth.factor === 10, String(tenth.factor));
+    check('per-image budgets are exported for the UI to offer',
+        exp.DEFAULT_IMAGE_BUDGET === 512 * 1024, String(exp.DEFAULT_IMAGE_BUDGET));
+    check('the thumbnail queue can be cleared', typeof cache.clearThumbQueue === 'function');
+}
 
-    const budget = await exp.buildCollectionExport('test1', { mode: 'budget', bytes: 10 * 1024 * 1024 });
-    check('budget mode reports the size it achieved', typeof budget.bytes === 'number');
-    check('budget mode stays within 10 MB for a small collection',
-        budget.bytes <= 10 * 1024 * 1024, budget.bytes + ' bytes');
-    check('export filename is derived from the collection name',
-        budget.filename === 'test1_collection.html', budget.filename);
+console.log('\nThumbnail queue (the Android failure)');
+{
+    const cache = await import('./js/cache.js');
+
+    // Count how many full-image downloads are in flight at once. Before the
+    // queue, the modal started one per photo simultaneously - which is what
+    // exhausted the phone and ended in "Could not load".
+    let inFlight = 0, peak = 0;
+    const prevFetch = global.fetch;
+    global.fetch = async (url) => {
+        if (String(url).includes('/drive/v3/files/')) {
+            inFlight++; peak = Math.max(peak, inFlight);
+            await new Promise(r => setTimeout(r, 15));
+            inFlight--;
+            // Not an image: makes the job fail, which is what we want to observe.
+            return { ok: true, blob: async () => new Blob(['x'], { type: 'text/plain' }),
+                     text: async () => '', json: async () => ({}) };
+        }
+        return prevFetch(url);
+    };
+
+    const ids = Array.from({ length: 10 }, (_, i) => 'img' + i);
+    const results = await Promise.allSettled(ids.map(id => cache.modalThumbUrl(id)));
+    global.fetch = prevFetch;
+
+    check('never more than a few downloads at once',
+        peak > 0 && peak <= 3, 'peak concurrency was ' + peak);
+    console.log('        (peak concurrent downloads: ' + peak + ' of 10 requested)');
+    check('ten photos did not all start together', peak < 10, 'peak=' + peak);
+    check('every one settled rather than hanging',
+        results.every(r => r.status === 'rejected' || r.status === 'fulfilled'));
+    check('failures are RECORDED for the info panel (this list was empty before)',
+        cache.thumbErrors.some(e => e.stage === 'generate'),
+        'stages seen: ' + [...new Set(cache.thumbErrors.map(e => e.stage))].join(','));
 }
 
 console.log('\nDate formatting');

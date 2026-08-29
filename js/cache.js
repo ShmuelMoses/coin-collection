@@ -67,6 +67,26 @@ function storeDelete(store, key) {
     }));
 }
 
+// Deletes every cached FULL-SIZE image, keeping the small thumbnails. Full
+// originals are several megabytes each and thumbnails are tens of kilobytes, so
+// this reclaims nearly all the space while losing almost nothing useful.
+function evictFullImages() {
+    return getDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction('images', 'readwrite');
+        const store = tx.objectStore('images');
+        const req = store.openKeyCursor();
+        let removed = 0;
+        req.onsuccess = () => {
+            const cursor = req.result;
+            if (!cursor) return;
+            if (String(cursor.key).endsWith('_full')) { store.delete(cursor.key); removed++; }
+            cursor.continue();
+        };
+        tx.oncomplete = () => { console.warn(`[cache] evicted ${removed} full-size images to free space`); resolve(removed); };
+        tx.onerror = () => reject(tx.error);
+    }));
+}
+
 const cacheGet = key => storeGet('images', key);
 const cacheSet = (key, blob) => storePut('images', key, blob);
 const cacheDelete = key => storeDelete('images', key);
@@ -100,14 +120,26 @@ function noteThumbError(stage, fileId, err) {
 // ---------- full images ----------
 // Google's fast thumbnailLink CDN blocks browser access, so the full image is
 // downloaded once and shrunk locally, and that small version cached separately.
+// Set once the browser refuses to store any more: full-size originals are the
+// space hogs, so we stop caching them rather than fail on every write.
+let skipFullImageCaching = false;
+
 export async function fetchFullImageBlob(fileId) {
     const cacheKey = fileId + '_full';
-    const cached = await cacheGet(cacheKey);
-    if (cached) {
-        if (cached.type && cached.type.startsWith('image/')) return cached;
-        // A bad (non-image) response got cached previously - throw it away and
-        // fetch fresh instead of failing forever.
-        await cacheDelete(cacheKey);
+
+    // A broken or full IndexedDB must cost SPEED, not function. This read used
+    // to be unprotected, so once the local database started refusing (a full
+    // quota is the usual reason, and full-size photos fill one quickly) the
+    // download below was never even attempted and every uncached photo failed.
+    try {
+        const cached = await cacheGet(cacheKey);
+        if (cached) {
+            if (cached.type && cached.type.startsWith('image/')) return cached;
+            // A bad (non-image) response got cached previously - throw it away.
+            await cacheDelete(cacheKey).catch(() => {});
+        }
+    } catch (err) {
+        noteThumbError('full-cache-read', fileId, err);
     }
 
     const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
@@ -118,7 +150,18 @@ export async function fetchFullImageBlob(fileId) {
     }
     // Not awaited: storing it is an optimisation for next time, and a stalled
     // IndexedDB write must never hold up the picture the user is waiting for.
-    cacheSet(cacheKey, blob).catch(err => noteThumbError('cache-write', fileId, err));
+    if (!skipFullImageCaching) {
+        cacheSet(cacheKey, blob).catch(err => {
+            noteThumbError('cache-write', fileId, err);
+            // Out of space: drop the full-size originals (the bulk of the
+            // usage) and stop storing more of them this session. Thumbnails,
+            // which are tiny and are what the grid actually needs, keep working.
+            if (err && (err.name === 'QuotaExceededError' || /quota/i.test(err.message || ''))) {
+                skipFullImageCaching = true;
+                evictFullImages().catch(e => console.warn('Could not evict cached images:', e));
+            }
+        });
+    }
     return blob;
 }
 
@@ -154,29 +197,6 @@ export async function resizeImageBlob(blob, maxDim, quality = 0.86) {
             canvas.width = width; canvas.height = height;
             canvas.getContext('2d').drawImage(img, 0, 0, width, height);
             canvas.toBlob(resolve, 'image/jpeg', quality);
-            URL.revokeObjectURL(objUrl);
-        };
-        img.onerror = () => {
-            URL.revokeObjectURL(objUrl);
-            reject(new Error(`Could not decode image (blob type="${blob.type}", size=${blob.size} bytes)`));
-        };
-        img.src = objUrl;
-    });
-}
-
-// Shrinks by a factor (4 = quarter width and height) - used to keep shared
-// export files to a sane size.
-export function resizeImageBlobByFactor(blob, factor) {
-    return new Promise((resolve, reject) => {
-        const img = new Image();
-        const objUrl = URL.createObjectURL(blob);
-        img.onload = () => {
-            const width = Math.max(1, Math.round(img.width / factor));
-            const height = Math.max(1, Math.round(img.height / factor));
-            const canvas = document.createElement('canvas');
-            canvas.width = width; canvas.height = height;
-            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-            canvas.toBlob(resolve, 'image/jpeg', 0.8);
             URL.revokeObjectURL(objUrl);
         };
         img.onerror = () => {
@@ -321,6 +341,47 @@ const CACHE_READ_TIMEOUT_MS = 8000;
 const INDEX_TIMEOUT_MS = 10000;
 const DOWNLOAD_TIMEOUT_MS = 60000;
 
+// Generating a thumbnail from the original is EXPENSIVE: it downloads several
+// megabytes and then decodes them into a full-resolution bitmap. A 12-megapixel
+// phone photo is around 48 MB once decoded, and the modal used to start one of
+// these for every photo in the country at the same moment - eight of them is
+// close to 400 MB of bitmaps at once. A desktop absorbs that; a phone does not,
+// and the requests would crawl until they hit the timeout and reported
+// "Could not load". Reading an ALREADY cached thumbnail is cheap and skips this
+// queue entirely, which is why previously-cached countries kept working.
+const THUMB_CONCURRENCY =
+    (navigator.deviceMemory && navigator.deviceMemory <= 4) ? 2 : 3;
+
+let activeThumbJobs = 0;
+const thumbQueue = [];
+
+function runQueuedThumbJobs() {
+    while (activeThumbJobs < THUMB_CONCURRENCY && thumbQueue.length) {
+        const job = thumbQueue.shift();
+        activeThumbJobs++;
+        job.run().then(job.resolve, job.reject).finally(() => {
+            activeThumbJobs--;
+            runQueuedThumbJobs();
+        });
+    }
+}
+
+function queueThumbJob(run) {
+    return new Promise((resolve, reject) => {
+        thumbQueue.push({ run, resolve, reject });
+        runQueuedThumbJobs();
+    });
+}
+
+// Dropped when the modal closes, so a country you have already left stops
+// competing for the queue with the one you just opened.
+export function clearThumbQueue() {
+    while (thumbQueue.length) {
+        const job = thumbQueue.shift();
+        job.reject(new Error('cancelled'));
+    }
+}
+
 async function getThumbnailBlobUrl(fileId) {
     const cacheKey = fileId + '_thumb';
 
@@ -366,13 +427,25 @@ async function getThumbnailBlobUrl(fileId) {
         noteThumbError('index', fileId, err);
     }
 
-    // 3. Last resort: download the original and shrink it here.
-    const fullBlob = await withTimeout(
-        fetchFullImageBlob(fileId), DOWNLOAD_TIMEOUT_MS, 'full image download');
-    const thumbBlob = await resizeImageBlob(fullBlob, 320);
-    cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
-    uploadThumbnailToDrive(fileId, thumbBlob); // background, never awaited
-    return URL.createObjectURL(thumbBlob);
+    // 3. Last resort: download the original and shrink it here. Queued, so only
+    //    a couple of these heavy jobs are ever in flight at once.
+    return queueThumbJob(async () => {
+        try {
+            const fullBlob = await withTimeout(
+                fetchFullImageBlob(fileId), DOWNLOAD_TIMEOUT_MS, 'full image download');
+            const thumbBlob = await resizeImageBlob(fullBlob, 320);
+            cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
+            uploadThumbnailToDrive(fileId, thumbBlob); // background, never awaited
+            return URL.createObjectURL(thumbBlob);
+        } catch (err) {
+            // This is the stage that actually fails in practice, and it used to
+            // throw straight out to the caller without being recorded - which is
+            // why the info panel's error list stayed empty while every image
+            // showed "Could not load".
+            noteThumbError('generate', fileId, err);
+            throw err;
+        }
+    });
 }
 
 export async function getFullImageBlobUrl(fileId) {

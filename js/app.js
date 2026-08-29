@@ -110,7 +110,7 @@ async function showCollectionsScreen() {
         return;
     }
 
-    collections.forEach((col, idx) => {
+    collections.forEach(col => {
         const item = document.createElement('div');
         item.className = 'collection-item';
         item.onclick = () => openCollection(col);
@@ -120,14 +120,8 @@ async function showCollectionsScreen() {
         nameSpan.style.flex = '1';
         item.appendChild(nameSpan);
 
-        const delBtn = document.createElement('button');
-        delBtn.className = 'delete-collection-btn';
-        delBtn.innerHTML = '&#128465;';
-        delBtn.title = 'Remove this collection';
-        delBtn.setAttribute('aria-label', 'Remove ' + col.name);
-        delBtn.onclick = e => { e.stopPropagation(); deleteCollection(col, idx); };
-        item.appendChild(delBtn);
-
+        // No delete control here any more: removing a collection lives in the
+        // info panel, alongside everything else about the open collection.
         contentEl.appendChild(item);
     });
 
@@ -136,27 +130,6 @@ async function showCollectionsScreen() {
     addBtn.textContent = '+ Add new collection';
     addBtn.onclick = addNewCollection;
     contentEl.appendChild(addBtn);
-}
-
-async function deleteCollection(col, idx) {
-    const ok = await confirmDialog(
-        `Remove "${col.name}" from your collections list? This only removes it ` +
-        `from this app - the folder and all photos stay exactly as they are in your Google Drive.`,
-        { title: 'Remove collection', confirmLabel: 'Remove' }
-    );
-    if (!ok) return;
-
-    const updated = collectionsState.collections.slice();
-    updated.splice(idx, 1);
-    setStatus('Removing...');
-    try {
-        const newFileId = await saveCollections(collectionsState.fileId, updated);
-        collectionsState = { fileId: newFileId, collections: updated };
-        await showCollectionsScreen();
-    } catch (err) {
-        console.error('Could not remove the collection:', err);
-        setStatus('Could not remove that collection: ' + (err.message || err));
-    }
 }
 
 function addNewCollection() {
@@ -382,13 +355,21 @@ function initControls() {
 }
 
 // ---------- sharing the whole collection ----------
-const TEN_MB = 10 * 1024 * 1024;
+// The options are stated as a size PER PHOTO, because that is something you can
+// actually predict the result from: 40 photos at 0.5 MB is roughly a 20 MB
+// file. The old "a tenth of size" told you nothing about the outcome.
+const SHARE_SIZES = [
+    { value: 1024 * 1024, label: '1 MB per photo',   hint: 'Best quality, largest file' },
+    { value: 512 * 1024,  label: '0.5 MB per photo', hint: 'A good balance' },
+    { value: 100 * 1024,  label: '0.1 MB per photo', hint: 'Smallest file, lowest quality' },
+];
 
 async function exportWholeCollection() {
     if (!currentCollection) return;
     closeCacheModal(); // launched from the info panel
 
     const countryCount = Object.keys(state.collectionData).length;
+    const photoCount = uniqueImageCount(state.cvCountryMap);
     if (countryCount === 0) {
         await alertDialog('There is nothing to share yet.');
         return;
@@ -396,42 +377,38 @@ async function exportWholeCollection() {
 
     const choice = await showChoiceDialog({
         title: 'Share collection',
-        message: `One file containing every photo in "${currentCollection.name}" ` +
-                 `(${uniqueImageCount(state.cvCountryMap)} items, ${countryCount} countries), ` +
-                 `with a table of contents. Bigger photos mean a much bigger file.`,
-        options: [
-            { value: 'full',   label: 'Full size',        hint: 'Original photos - can be very large' },
-            { value: 'tenth',  label: 'A tenth of size',  hint: 'Each side divided by 10' },
-            { value: 'budget', label: 'Fit within 10 MB', hint: 'Shrunk automatically to fit' },
-        ]
+        message: `One file with every photo in "${currentCollection.name}" ` +
+                 `(${photoCount} items, ${countryCount} countries) and a table of contents. ` +
+                 `Pick how much detail each photo keeps.`,
+        options: SHARE_SIZES.map(o => ({
+            value: String(o.value),
+            label: o.label,
+            hint: `${o.hint} — about ${formatSize(o.value * photoCount)} in total`
+        }))
     });
     if (!choice) return;
 
-    const sizing = choice === 'full'  ? { mode: 'full' }
-                 : choice === 'tenth' ? { mode: 'fraction', factor: 10 }
-                 : { mode: 'budget', bytes: TEN_MB };
-
-    const progress = showProgressDialog('Preparing', 'Collecting photos…');
+    const progress = showProgressDialog('Preparing', 'Collecting photos…', { cancellable: true });
     try {
-        const result = await buildCollectionExport(currentCollection.name, sizing, (done, total, pass) => {
-            progress.setMessage(pass > 1
-                ? `Still too big - shrinking (photo ${done} of ${total})…`
-                : `Preparing photo ${done} of ${total}…`);
-        });
+        const result = await buildCollectionExport(
+            currentCollection.name, Number(choice),
+            (done, total) => progress.setMessage(`Preparing photo ${done} of ${total}…`),
+            progress.signal
+        );
         progress.close();
-        const mb = (result.bytes / (1024 * 1024)).toFixed(1);
-        if (sizing.mode === 'budget' && result.bytes > sizing.bytes) {
-            const go = await confirmDialog(
-                `The smallest version still comes to ${mb} MB. Share it anyway?`,
-                { title: 'Larger than 10 MB', confirmLabel: 'Share' });
-            if (!go) return;
-        }
         await shareOrDownloadFile(result.blob, result.filename);
     } catch (err) {
         progress.close();
+        if (err && err.message === 'cancelled') return; // the user asked to stop
         console.error('Collection share failed:', err);
         await alertDialog('Could not build that file: ' + (err.message || err), 'Share failed');
     }
+}
+
+function formatSize(bytes) {
+    return bytes >= 1024 * 1024
+        ? (bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1) + ' MB'
+        : Math.round(bytes / 1024) + ' KB';
 }
 
 // Removes the OPEN collection from the app, then returns to the list. The same

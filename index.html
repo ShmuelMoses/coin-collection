@@ -88,16 +88,8 @@
             margin-top: 10px;
             cursor: pointer;
             text-align: left;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
         }
         .collection-item:hover { border-color: var(--accent-owned); }
-        .delete-collection-btn {
-            width: auto; margin: 0; padding: 4px 8px; background: transparent;
-            border: 1px solid transparent; color: var(--text-dim); font-size: 15px; border-radius: 6px;
-        }
-        .delete-collection-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-dim); }
         #status { font-size: 13px; color: var(--text-dim); margin-top: 16px; }
 
         /* ===== Collection view (map/list/search/modal) ===== */
@@ -118,11 +110,13 @@
             display: flex; align-items: center; gap: 14px;
         }
         #cv-title {
-            order: 1; font-size: 22px; margin: 0; color: var(--accent-owned);
-            white-space: nowrap; flex: 0 0 auto;
+            order: 1; font-size: 30px; font-weight: 700; margin: 0;
+            color: var(--accent-owned); white-space: nowrap; flex: 0 0 auto;
         }
+        /* margin-left:auto pushes the whole control group to the right-hand end
+           of the bar, leaving the collection name alone on the left. */
         #cv-controls-row {
-            order: 2; flex: 1 1 auto;
+            order: 2; flex: 0 1 auto; margin-left: auto;
             display: flex; align-items: center; gap: 8px; min-width: 0;
         }
         #icon-row { display: flex; gap: 6px; margin: 0; flex: 0 0 auto; }
@@ -136,14 +130,16 @@
         .icon-btn:hover { border-color: var(--accent-owned); }
         .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
         .search-wrap { flex: 1 1 200px; min-width: 120px; max-width: 340px; margin: 0; }
+        /* An ordinary button, matching the others in the row, rather than the
+           small circular glyph it was. */
         #info-btn {
-            order: 3; flex: 0 0 auto; margin: 0; cursor: pointer;
-            width: 28px; height: 28px; padding: 0; background: none;
-            border: 1px solid var(--border); border-radius: 50%;
-            color: var(--text-dim); opacity: 0.75;
+            order: 3; flex: 0 0 auto; margin: 0;
+            width: 34px; height: 34px; padding: 0;
+            background: var(--panel-alt); border: 1px solid var(--border);
+            border-radius: 6px; color: var(--text); cursor: pointer;
             display: flex; align-items: center; justify-content: center;
         }
-        #info-btn:hover { opacity: 1; color: var(--accent-owned); border-color: var(--accent-owned); }
+        #info-btn:hover { border-color: var(--accent-owned); }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
 
         /* Phones: the same bar, wrapped onto two rows - title and info button
@@ -155,9 +151,9 @@
                 grid-template-areas: "title version" "controls controls";
                 align-items: center; gap: 4px 10px; padding: 8px 10px;
             }
-            #cv-title { grid-area: title; font-size: 28px; font-weight: 700; }
-            #info-btn { grid-area: version; margin: 0 0 0 auto; }
-            #cv-controls-row { grid-area: controls; gap: 6px; }
+            #cv-title { grid-area: title; font-size: 28px; }
+            #info-btn { grid-area: version; margin: 0 0 0 auto; width: 30px; height: 30px; }
+            #cv-controls-row { grid-area: controls; gap: 6px; margin-left: 0; }
             .icon-btn { flex: 0 0 30px; width: 30px; height: 30px; font-size: 14px; }
             .search-wrap { flex: 1 1 140px; min-width: 100px; max-width: none; }
             /* Height/line-height/appearance are pinned explicitly - "height:30px"
@@ -426,7 +422,7 @@
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
             <button id="info-btn" title="About this collection" aria-label="About this collection">
-                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><line x1="12" y1="7" x2="12" y2="13.5"/><line x1="12" y1="17" x2="12" y2="17"/></svg>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/><line x1="12" y1="7.5" x2="12" y2="7.6"/></svg>
             </button>
             <div id="cv-controls-row">
                 <div id="icon-row">

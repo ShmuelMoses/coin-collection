@@ -3,7 +3,7 @@
 import { state } from './state.js';
 import { COUNTRY_NAMES } from './countries.js';
 import { applyOrder } from './util.js';
-import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl } from './cache.js';
+import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
 import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty } from './layouts.js';
 import { buildCountryExport, shareOrDownloadFile } from './export.js';
 import { alertDialog, showProgressDialog } from './dialog.js';
@@ -357,6 +357,7 @@ export function closeModal(fromPopstate) {
     modalBackdrop.style.display = 'none';
     document.getElementById('cv-main').classList.remove('dimmed');
     releaseModalObjectUrls(); // these belong to the modal that just closed
+    clearThumbQueue();        // stop generating thumbnails for a country you left
     if (!fromPopstate) {
         // The handler must not treat this as a second "go back".
         state.suppressNextPopstate = true;

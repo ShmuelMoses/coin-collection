@@ -2,7 +2,7 @@
 // whoever opens one needs no Drive access, no sign-in and no waiting.
 
 import { escapeHtml, blobToBase64, applyOrder } from './util.js';
-import { fetchFullImageBlob, resizeImageBlobByFactor } from './cache.js';
+import { fetchFullImageBlob, resizeImageBlob } from './cache.js';
 import { COUNTRY_NAMES } from './countries.js';
 import { getCountryLayout } from './layouts.js';
 import { state } from './state.js';
@@ -49,25 +49,69 @@ export function orderedGroupsFor(code) {
     return groups;
 }
 
-// Fetches, shrinks and base64-encodes images in parallel, reporting progress.
-// `factor` 4 means quarter width and height; 1 means original size. It may be
-// fractional, since the budget mode solves for it numerically.
-async function encodeImages(images, factor, onProgress) {
+// Encodes ONE image to at most `maxBytes`, by shrinking and re-encoding until
+// it fits. Area scales with the square of the linear factor, so sqrt(overshoot)
+// is the right correction and this converges in two or three passes. A
+// per-image budget is what makes the total size predictable: N photos at 0.5 MB
+// is about N/2 MB, which is something you can actually reason about, unlike
+// "a tenth of the original".
+const MAX_ENCODE_PASSES = 4;
+const START_MAX_DIM = 1600;
+
+async function encodeToBudget(fullBlob, maxBytes) {
+    let maxDim = START_MAX_DIM;
+    let quality = 0.82;
+    let best = null;
+
+    for (let pass = 0; pass < MAX_ENCODE_PASSES; pass++) {
+        const blob = await resizeImageBlob(fullBlob, Math.round(maxDim), quality);
+        if (!blob) break;
+        best = blob;
+        if (blob.size <= maxBytes) break;
+        const overshoot = blob.size / maxBytes;
+        if (quality > 0.55 && overshoot < 1.6) {
+            // Only a little over: drop quality before losing resolution.
+            quality = Math.max(0.5, quality - 0.15);
+        } else {
+            maxDim = Math.max(120, maxDim / Math.sqrt(overshoot) * 0.95);
+        }
+    }
+    return best;
+}
+
+// `budgetBytes` is the per-image ceiling. `signal` lets a long export be
+// stopped: it is checked between images, so cancelling takes effect within one
+// photo rather than at the end.
+//
+// Concurrency is deliberately low for the same reason as the thumbnail queue -
+// decoding several full-resolution photos at once is what exhausts a phone.
+const EXPORT_CONCURRENCY = 2;
+
+async function encodeImages(images, budgetBytes, onProgress, signal) {
     const dataUrlById = {};
     let done = 0;
-    await Promise.all(images.map(async img => {
-        try {
-            const fullBlob = await fetchFullImageBlob(img.id);
-            const smallBlob = factor <= 1
-                ? fullBlob // original resolution: no re-encode at all
-                : await resizeImageBlobByFactor(fullBlob, factor);
-            dataUrlById[img.id] = await blobToBase64(smallBlob);
-        } catch (err) {
-            console.warn('Skipping image that could not be exported:', img.id, err);
+    let next = 0;
+
+    async function worker() {
+        while (next < images.length) {
+            if (signal && signal.cancelled) throw new Error('cancelled');
+            const img = images[next++];
+            try {
+                const fullBlob = await fetchFullImageBlob(img.id);
+                const smallBlob = await encodeToBudget(fullBlob, budgetBytes);
+                if (smallBlob) dataUrlById[img.id] = await blobToBase64(smallBlob);
+            } catch (err) {
+                if (err && err.message === 'cancelled') throw err;
+                console.warn('Skipping image that could not be exported:', img.id, err);
+            }
+            done++;
+            if (onProgress) onProgress(done, images.length);
         }
-        done++;
-        if (onProgress) onProgress(done, images.length);
-    }));
+    }
+
+    await Promise.all(
+        Array.from({ length: Math.min(EXPORT_CONCURRENCY, images.length) }, worker)
+    );
     return dataUrlById;
 }
 
@@ -95,14 +139,16 @@ ${bodyHtml}
 }
 
 // ---------- one country ----------
-export async function buildCountryExport(code, selectedIds, onProgress) {
+export const DEFAULT_IMAGE_BUDGET = 512 * 1024; // 0.5 MB per photo
+
+export async function buildCountryExport(code, selectedIds, onProgress, signal) {
     const groups = orderedGroupsFor(code)
         .map(g => ({ heading: g.heading, images: g.images.filter(img => selectedIds.has(img.id)) }))
         .filter(g => g.images.length > 0);
     const all = groups.flatMap(g => g.images);
     if (!all.length) return null;
 
-    const dataUrlById = await encodeImages(all, 4, onProgress);
+    const dataUrlById = await encodeImages(all, DEFAULT_IMAGE_BUDGET, onProgress, signal);
     const countryName = COUNTRY_NAMES[code] || code;
     const body = `<h1>${escapeHtml(countryName)}</h1>` + groupsToHtml(groups, dataUrlById, 'h3');
     return {
@@ -115,19 +161,12 @@ export async function buildCountryExport(code, selectedIds, onProgress) {
 // One document with a table of contents and every owned country in order. The
 // per-country export shrinks by 4; this one shrinks harder by default because
 // a large collection would otherwise run to hundreds of megabytes.
-// `sizing` is one of:
-//   { mode: 'full' }              - original resolution
-//   { mode: 'fraction', factor }  - each side divided by `factor`
-//   { mode: 'budget', bytes }     - shrink until the file fits in `bytes`
-//
-// The budget mode measures the encoded result and, if it is over, re-encodes at
-// a smaller scale. Because area scales with the square of the linear factor,
-// sqrt(actual / budget) is the right correction, and it converges in one or two
-// passes. Re-encoding is cheap: the originals are already in the local cache
-// after the first pass, so nothing is downloaded twice.
-const MAX_BUDGET_PASSES = 3;
-
-export async function buildCollectionExport(collectionName, sizing, onProgress) {
+// `budgetBytes` is the ceiling for EACH photo, so the finished file lands near
+// (number of photos x budget) and the user can predict it from the option they
+// picked. The previous "full size" option built one enormous string and could
+// fail outright with "Invalid string length" once the document passed the
+// engine's maximum string size - a per-image budget removes that cliff.
+export async function buildCollectionExport(collectionName, budgetBytes, onProgress, signal) {
     const codes = Object.keys(state.collectionData)
         .sort((a, b) => (COUNTRY_NAMES[a] || a).localeCompare(COUNTRY_NAMES[b] || b));
 
@@ -144,51 +183,32 @@ export async function buildCollectionExport(collectionName, sizing, onProgress) 
         allImages.push(img);
     })));
 
-    function assemble(dataUrlById) {
-        const toc = perCountry.map(c => {
-            const name = COUNTRY_NAMES[c.code] || c.code;
-            const n = c.groups.reduce((s, g) => s + g.images.length, 0);
-            return `<div><a href="#c-${escapeHtml(c.code)}">${escapeHtml(name)}</a> (${n})</div>`;
-        }).join('');
+    const dataUrlById = await encodeImages(allImages, budgetBytes, onProgress, signal);
 
-        let body = `<h1>${escapeHtml(collectionName)}</h1>`;
-        body += `<p class="meta">${allImages.length} item${allImages.length === 1 ? '' : 's'} from ` +
-                `${perCountry.length} countr${perCountry.length === 1 ? 'y' : 'ies'} \u2014 ` +
-                `exported ${new Date().toLocaleDateString('en-GB')}</p>`;
-        body += `<div class="toc">${toc}</div>`;
-        perCountry.forEach(c => {
-            const name = COUNTRY_NAMES[c.code] || c.code;
-            body += `<h2 id="c-${escapeHtml(c.code)}">${escapeHtml(name)}</h2>`;
-            body += groupsToHtml(c.groups, dataUrlById, 'h3');
-        });
-        return wrapDocument(collectionName, body);
-    }
+    const toc = perCountry.map(c => {
+        const name = COUNTRY_NAMES[c.code] || c.code;
+        const n = c.groups.reduce((s, g) => s + g.images.length, 0);
+        return `<div><a href="#c-${escapeHtml(c.code)}">${escapeHtml(name)}</a> (${n})</div>`;
+    }).join('');
 
-    let factor = sizing.mode === 'full' ? 1
-               : sizing.mode === 'fraction' ? sizing.factor
-               : 6; // starting guess for a budget
-    let html, blob;
+    let body = `<h1>${escapeHtml(collectionName)}</h1>`;
+    body += `<p class="meta">${allImages.length} item${allImages.length === 1 ? '' : 's'} from ` +
+            `${perCountry.length} countr${perCountry.length === 1 ? 'y' : 'ies'} \u2014 ` +
+            `exported ${new Date().toLocaleDateString('en-GB')}</p>`;
+    body += `<div class="toc">${toc}</div>`;
+    perCountry.forEach(c => {
+        const name = COUNTRY_NAMES[c.code] || c.code;
+        body += `<h2 id="c-${escapeHtml(c.code)}">${escapeHtml(name)}</h2>`;
+        body += groupsToHtml(c.groups, dataUrlById, 'h3');
+    });
 
-    for (let pass = 1; ; pass++) {
-        const dataUrlById = await encodeImages(allImages, factor, (done, total) =>
-            onProgress && onProgress(done, total, pass));
-        html = assemble(dataUrlById);
-        blob = new Blob([html], { type: 'text/html' });
-
-        if (sizing.mode !== 'budget' || blob.size <= sizing.bytes || pass >= MAX_BUDGET_PASSES) break;
-        // Over budget: shrink each side by sqrt(over-shoot), with a little
-        // headroom so the next pass is not borderline.
-        const overshoot = blob.size / sizing.bytes;
-        factor = Math.min(40, factor * Math.sqrt(overshoot) * 1.08);
-    }
-
+    const blob = new Blob([wrapDocument(collectionName, body)], { type: 'text/html' });
     return {
         blob,
         filename: `${collectionName.replace(/\s+/g, '_')}_collection.html`,
         imageCount: allImages.length,
         countryCount: perCountry.length,
-        bytes: blob.size,
-        factor
+        bytes: blob.size
     };
 }
 

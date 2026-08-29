@@ -222,27 +222,51 @@ export function showChoiceDialog(options) {
     });
 }
 
-// A dialog that stays open while something runs, with a live status line.
-// Returns { setMessage, close }.
-export function showProgressDialog(title, message) {
+// A dialog that stays open while something runs, with a live status line and
+// an optional Cancel. Returns { setMessage, close, signal }: `signal.cancelled`
+// flips to true when Cancel is pressed, and long jobs check it between steps.
+export function showProgressDialog(title, message, opts) {
+    const o = opts || {};
     const backdrop = ensureBackdrop();
     backdrop.innerHTML = '';
+
     const box = document.createElement('div');
     box.className = 'dialog-box';
     box.setAttribute('role', 'dialog');
     box.setAttribute('aria-modal', 'true');
+
     const h = document.createElement('h3');
     h.textContent = title;
     const p = document.createElement('p');
     p.className = 'dialog-message';
     p.textContent = message || '';
     box.append(h, p);
+
+    const signal = { cancelled: false };
+
+    if (o.cancellable) {
+        const actions = document.createElement('div');
+        actions.className = 'dialog-actions';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'legend-btn';
+        cancelBtn.textContent = o.cancelLabel || 'Cancel';
+        cancelBtn.onclick = () => {
+            signal.cancelled = true;
+            cancelBtn.disabled = true;
+            p.textContent = 'Cancelling…';
+        };
+        actions.appendChild(cancelBtn);
+        box.appendChild(actions);
+    }
+
     backdrop.appendChild(box);
     backdrop.classList.add('open');
-    // Deliberately not closable by backdrop or Escape while work is running.
+    // Deliberately not dismissable by backdrop or Escape - Cancel is the way out.
     closeActive = null;
+
     return {
-        setMessage: text => { p.textContent = text; },
+        signal,
+        setMessage: text => { if (!signal.cancelled) p.textContent = text; },
         close: () => { backdrop.classList.remove('open'); backdrop.innerHTML = ''; }
     };
 }
