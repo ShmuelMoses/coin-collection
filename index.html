@@ -109,9 +109,11 @@
             padding: 10px 16px;
             display: flex; align-items: center; gap: 14px;
         }
+        /* line-height matched to the 34px buttons so the name and the controls
+           sit on the same baseline and the bar is exactly one button tall. */
         #cv-title {
-            order: 1; font-size: 30px; font-weight: 700; margin: 0;
-            color: var(--accent-owned); white-space: nowrap; flex: 0 0 auto;
+            order: 1; font-size: 26px; font-weight: 700; line-height: 34px;
+            margin: 0; color: var(--accent-owned); white-space: nowrap; flex: 0 0 auto;
         }
         /* margin-left:auto pushes the whole control group to the right-hand end
            of the bar, leaving the collection name alone on the left. */
@@ -130,16 +132,6 @@
         .icon-btn:hover { border-color: var(--accent-owned); }
         .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
         .search-wrap { flex: 1 1 200px; min-width: 120px; max-width: 340px; margin: 0; }
-        /* An ordinary button, matching the others in the row, rather than the
-           small circular glyph it was. */
-        #info-btn {
-            order: 3; flex: 0 0 auto; margin: 0;
-            width: 34px; height: 34px; padding: 0;
-            background: var(--panel-alt); border: 1px solid var(--border);
-            border-radius: 6px; color: var(--text); cursor: pointer;
-            display: flex; align-items: center; justify-content: center;
-        }
-        #info-btn:hover { border-color: var(--accent-owned); }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
 
         /* Phones: the same bar, wrapped onto two rows - title and info button
@@ -147,13 +139,11 @@
            line. */
         @media (max-width: 700px) {
             #cv-sidebar {
-                display: grid; grid-template-columns: 1fr auto;
-                grid-template-areas: "title version" "controls controls";
-                align-items: center; gap: 4px 10px; padding: 8px 10px;
+                display: flex; flex-direction: column; align-items: stretch;
+                gap: 6px; padding: 8px 10px;
             }
-            #cv-title { grid-area: title; font-size: 28px; }
-            #info-btn { grid-area: version; margin: 0 0 0 auto; width: 30px; height: 30px; }
-            #cv-controls-row { grid-area: controls; gap: 6px; margin-left: 0; }
+            #cv-title { font-size: 26px; line-height: 30px; }
+            #cv-controls-row { gap: 6px; margin-left: 0; }
             .icon-btn { flex: 0 0 30px; width: 30px; height: 30px; font-size: 14px; }
             .search-wrap { flex: 1 1 140px; min-width: 100px; max-width: none; }
             /* Height/line-height/appearance are pinned explicitly - "height:30px"
@@ -421,11 +411,11 @@
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <button id="info-btn" title="About this collection" aria-label="About this collection">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/><line x1="12" y1="7.5" x2="12" y2="7.6"/></svg>
-            </button>
             <div id="cv-controls-row">
                 <div id="icon-row">
+                    <button id="info-btn" class="icon-btn" title="About this collection" aria-label="About this collection">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16.5"/><line x1="12" y1="7.5" x2="12" y2="7.6"/></svg>
+                    </button>
                     <button id="back-btn" class="icon-btn" title="Back to My Collections" aria-label="Back to My Collections">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <g transform="scale(-1,1) translate(-24,0)">

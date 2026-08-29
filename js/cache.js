@@ -170,41 +170,78 @@ export async function fetchFullImageBlob(fileId) {
 // browser decodes straight to the target size using its native image pipeline,
 // which is faster and sharper than decoding full-res into an <img> and scaling
 // by hand. Falls back to Image+canvas where that isn't supported (e.g. Safari).
-export async function resizeImageBlob(blob, maxDim, quality = 0.86) {
-    if (typeof createImageBitmap === 'function') {
+function canvasToBlob(canvas, quality) {
+    return new Promise((resolve, reject) => {
         try {
-            const srcBitmap = await createImageBitmap(blob);
-            const [w, h] = resizeDims(srcBitmap.width, srcBitmap.height, maxDim);
-            const resizedBitmap = await createImageBitmap(srcBitmap, {
-                resizeWidth: w, resizeHeight: h, resizeQuality: 'high'
-            });
-            srcBitmap.close();
-            const canvas = document.createElement('canvas');
-            canvas.width = w; canvas.height = h;
-            canvas.getContext('2d').drawImage(resizedBitmap, 0, 0, w, h);
-            resizedBitmap.close();
-            return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+            canvas.toBlob(
+                b => b ? resolve(b) : reject(new Error('canvas.toBlob produced no data')),
+                'image/jpeg', quality);
         } catch (err) {
-            console.warn('createImageBitmap resize failed, falling back:', err);
+            reject(err); // some browsers throw outright on an oversized canvas
         }
+    });
+}
+
+// Decodes STRAIGHT to the target size. Passing only resizeWidth makes the
+// browser compute the height itself, so the full-resolution bitmap is never
+// materialised - which matters enormously: a 12-megapixel phone photo is about
+// 48 MB decoded, and the previous version decoded it in full purely to read its
+// dimensions before shrinking it. Several of those at once is what a phone
+// cannot survive.
+async function resizeViaBitmap(blob, maxDim, quality) {
+    const bitmap = await createImageBitmap(blob, { resizeWidth: maxDim, resizeQuality: 'high' });
+    try {
+        // Portrait images come back taller than maxDim (only the width was
+        // constrained), so scale during the draw - free, no second decode.
+        const scale = Math.min(1, maxDim / bitmap.width, maxDim / bitmap.height);
+        const w = Math.max(1, Math.round(bitmap.width * scale));
+        const h = Math.max(1, Math.round(bitmap.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+        return await canvasToBlob(canvas, quality);
+    } finally {
+        bitmap.close();
     }
+}
+
+function resizeViaImage(blob, maxDim, quality) {
     return new Promise((resolve, reject) => {
         const img = new Image();
         const objUrl = URL.createObjectURL(blob);
-        img.onload = () => {
-            const [width, height] = resizeDims(img.width, img.height, maxDim);
-            const canvas = document.createElement('canvas');
-            canvas.width = width; canvas.height = height;
-            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-            canvas.toBlob(resolve, 'image/jpeg', quality);
-            URL.revokeObjectURL(objUrl);
+        img.onload = async () => {
+            try {
+                const [width, height] = resizeDims(img.width, img.height, maxDim);
+                const canvas = document.createElement('canvas');
+                canvas.width = width; canvas.height = height;
+                canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+                resolve(await canvasToBlob(canvas, quality));
+            } catch (err) {
+                reject(err);
+            } finally {
+                URL.revokeObjectURL(objUrl);
+            }
         };
         img.onerror = () => {
             URL.revokeObjectURL(objUrl);
-            reject(new Error(`Could not decode image (blob type="${blob.type}", size=${blob.size} bytes)`));
+            reject(new Error(`Could not decode image (type="${blob.type}", ${blob.size} bytes)`));
         };
         img.src = objUrl;
     });
+}
+
+// Always settles: every path is bounded. This had no timeout at all, so a
+// decode that stalled under memory pressure hung its caller forever.
+export async function resizeImageBlob(blob, maxDim, quality = 0.86) {
+    if (typeof createImageBitmap === 'function') {
+        try {
+            return await withTimeout(
+                resizeViaBitmap(blob, maxDim, quality), TIMEOUTS.resize, 'image decode');
+        } catch (err) {
+            console.warn('Fast resize failed, falling back:', err);
+        }
+    }
+    return withTimeout(resizeViaImage(blob, maxDim, quality), TIMEOUTS.resize, 'image decode (fallback)');
 }
 
 // ---------- Drive-side thumbnail cache ----------
@@ -336,10 +373,18 @@ async function uploadThumbnailToDrive(fileId, thumbBlob) {
     }
 }
 
-// How long any single stage may take before it is treated as failed.
-const CACHE_READ_TIMEOUT_MS = 8000;
-const INDEX_TIMEOUT_MS = 10000;
-const DOWNLOAD_TIMEOUT_MS = 60000;
+// How long each stage may take before it is treated as failed. Exported as one
+// mutable object so the values are in a single visible place (and so the tests
+// can shorten them). They are deliberately not generous: on a phone a stalled
+// stage that takes a minute to give up is indistinguishable from a hang, and
+// while it waits it is occupying one of the few queue slots.
+export const TIMEOUTS = {
+    cacheRead: 8000,
+    index: 10000,
+    download: 30000,
+    resize: 20000,
+    job: 55000,   // outer bound on download + decode + encode together
+};
 
 // Generating a thumbnail from the original is EXPENSIVE: it downloads several
 // megabytes and then decodes them into a full-resolution bitmap. A 12-megapixel
@@ -352,6 +397,10 @@ const DOWNLOAD_TIMEOUT_MS = 60000;
 const THUMB_CONCURRENCY =
     (navigator.deviceMemory && navigator.deviceMemory <= 4) ? 2 : 3;
 
+// A job that never settles used to hold its slot forever, and once all the
+// slots were held that way the queue was dead: every later photo waited behind
+// it with no error and no timeout - an endless spinner. Nothing may occupy a
+// slot indefinitely (see TIMEOUTS.job).
 let activeThumbJobs = 0;
 const thumbQueue = [];
 
@@ -359,10 +408,18 @@ function runQueuedThumbJobs() {
     while (activeThumbJobs < THUMB_CONCURRENCY && thumbQueue.length) {
         const job = thumbQueue.shift();
         activeThumbJobs++;
-        job.run().then(job.resolve, job.reject).finally(() => {
+        let released = false;
+        const release = () => {
+            if (released) return; // belt and braces: release exactly once
+            released = true;
             activeThumbJobs--;
             runQueuedThumbJobs();
-        });
+        };
+        // Promise.resolve().then(run) also converts a synchronous throw in the
+        // job into a rejection, so it cannot escape past the release either.
+        withTimeout(Promise.resolve().then(job.run), TIMEOUTS.job, 'thumbnail job')
+            .then(job.resolve, job.reject)
+            .finally(release);
     }
 }
 
@@ -387,7 +444,7 @@ async function getThumbnailBlobUrl(fileId) {
 
     // 1. Already in this browser's cache - the fast path, no network at all.
     try {
-        const cached = await withTimeout(cacheGet(cacheKey), CACHE_READ_TIMEOUT_MS, 'local cache read');
+        const cached = await withTimeout(cacheGet(cacheKey), TIMEOUTS.cacheRead, 'local cache read');
         if (cached) return URL.createObjectURL(cached);
     } catch (err) {
         // A broken IndexedDB must not stop images loading; it only means every
@@ -403,13 +460,13 @@ async function getThumbnailBlobUrl(fileId) {
     // raced against a timeout, and a slow or broken index simply falls through
     // to the full-size download below instead of blocking the whole modal.
     try {
-        const index = await withTimeout(getDriveThumbIndex(), INDEX_TIMEOUT_MS, 'Drive thumbnail index');
+        const index = await withTimeout(getDriveThumbIndex(), TIMEOUTS.index, 'Drive thumbnail index');
         const thumbName = fileId + '_thumb.jpg';
         const entry = index.get(thumbName);
         if (entry) {
             try {
                 const thumbBlob = await withTimeout(
-                    fetchDriveThumbBlob(entry.id), DOWNLOAD_TIMEOUT_MS, 'cached thumbnail download');
+                    fetchDriveThumbBlob(entry.id), TIMEOUTS.download, 'cached thumbnail download');
                 cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
                 return URL.createObjectURL(thumbBlob);
             } catch (err) {
@@ -432,7 +489,7 @@ async function getThumbnailBlobUrl(fileId) {
     return queueThumbJob(async () => {
         try {
             const fullBlob = await withTimeout(
-                fetchFullImageBlob(fileId), DOWNLOAD_TIMEOUT_MS, 'full image download');
+                fetchFullImageBlob(fileId), TIMEOUTS.download, 'full image download');
             const thumbBlob = await resizeImageBlob(fullBlob, 320);
             cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
             uploadThumbnailToDrive(fileId, thumbBlob); // background, never awaited

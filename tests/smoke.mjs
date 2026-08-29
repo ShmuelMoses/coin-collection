@@ -438,6 +438,46 @@ console.log('\nThumbnail queue (the Android failure)');
         'stages seen: ' + [...new Set(cache.thumbErrors.map(e => e.stage))].join(','));
 }
 
+console.log('\nA stuck photo must not wedge the queue');
+{
+    const cache = await import('./js/cache.js');
+    // Shorten the bounds so the test runs in milliseconds; the mechanism under
+    // test is that the slot is released at all, not how long it waits.
+    // download is left LONG on purpose: only the outer per-job bound can
+    // release a slot here, which is exactly the guard being tested.
+    cache.TIMEOUTS.job = 120;
+    cache.TIMEOUTS.download = 30000;
+
+    // Three photos whose download never settles - enough to occupy every slot -
+    // followed by one that would succeed. Before the fix the stalled jobs held
+    // their slots forever and the fourth photo waited with no error and no
+    // timeout, which is what "infinite loading, no error" looked like.
+    const prevFetch = global.fetch;
+    const stuck = new Set(['hang0', 'hang1', 'hang2']);
+    global.fetch = async (url) => {
+        const m = String(url).match(/files\/([^?]+)/);
+        if (m && stuck.has(m[1])) return new Promise(() => {}); // never settles
+        if (m) return { ok: true, blob: async () => new Blob(['x'], { type: 'text/plain' }),
+                        text: async () => '', json: async () => ({}) };
+        return prevFetch(url);
+    };
+
+    // Shrink the wait so the test is quick: the job timeout is what guarantees
+    // the slot is released, and we only need to prove the slot IS released.
+    const started = Date.now();
+    const results = await Promise.allSettled([
+        cache.modalThumbUrl('hang0'), cache.modalThumbUrl('hang1'),
+        cache.modalThumbUrl('hang2'), cache.modalThumbUrl('after'),
+    ].map(p => Promise.race([p, new Promise(r => setTimeout(() => r('STILL-PENDING'), 300))])));
+    global.fetch = prevFetch;
+
+    const fourth = results[3];
+    check('a photo queued behind stalled ones is not left pending forever',
+        fourth.value !== 'STILL-PENDING' || fourth.status === 'rejected',
+        'the 4th photo was still pending - the queue was wedged');
+    check('the stalled ones did not consume the whole run', Date.now() - started < 3000);
+}
+
 console.log('\nDate formatting');
 check('a Hebrew device locale does not leak into the date', (() => {
     const d = new Date('2026-08-20T00:00:00Z').toLocaleDateString('en-GB',
