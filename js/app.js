@@ -4,13 +4,15 @@
 import {
     API_KEY, APP_VERSION, TRANSITION_MS
 } from './config.js';
-import { initAuth, promptSignIn, trySilentSignIn, clearToken, getAccessToken } from './auth.js';
+import { initAuth, promptSignIn, trySilentSignIn, clearToken, getAccessToken, isAuthReady } from './auth.js';
 import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } from './drive.js';
 import {
-    getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError,
-    releaseModalObjectUrls, thumbErrors, SNAP, saveSnapshot, readSnapshot
+    getDriveThumbIndex, clearDriveThumbCache, clearLocalImageCache, localCacheStats,
+    lastThumbUploadError, releaseModalObjectUrls, thumbErrors,
+    SNAP, saveSnapshot, readSnapshot
 } from './cache.js';
 import { state, resetCollectionState } from './state.js';
+import { startConnectivityMonitor, onConnectivityChange, checkNow } from './net.js';
 import { COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount } from './countries.js';
 import { loadLayouts, resetLayouts } from './layouts.js';
 import { initModal, closeModal, isModalOpen, setModalCollectionName } from './modal.js';
@@ -40,47 +42,127 @@ let signedOutShown = false;
 // end: the sign-in button stayed disabled and the app could do nothing, even
 // though every photo was already on the device.
 function googleScriptsPresent() {
-    return typeof gapi !== 'undefined' && typeof google !== 'undefined';
+    return typeof gapi !== 'undefined' && typeof gapi.load === 'function'
+        && typeof google !== 'undefined'
+        && !!(google.accounts && google.accounts.oauth2);
 }
 
-function boot() {
-    if (!googleScriptsPresent() || navigator.onLine === false) {
-        offerOfflineMode(navigator.onLine === false
-            ? 'You appear to be offline.'
-            : "Google's sign-in could not be reached.");
-        // Keep trying in the background: if the connection comes back the
-        // normal sign-in path takes over without a reload.
-        window.addEventListener('online', () => { if (!state.offline) boot(); }, { once: true });
-        return;
-    }
-    loadGapiClient();
-}
-
-function loadGapiClient() {
-    gapi.load('client:picker', async () => {
-        try {
-            await gapi.client.init({ apiKey: API_KEY });
-            await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest');
-
-            const btn = document.getElementById('signin-btn');
-            btn.disabled = false;
-            btn.textContent = 'Sign in with Google';
-
-            initAuth({ onSignIn: startSignedInSession, onExpired: reportSignedOut });
-            // Try a silent sign-in first: if access was granted before and the
-            // Google session is still live, this logs back in with no click.
-            trySilentSignIn();
-        } catch (err) {
-            console.error(err);
-            if (isNetworkError(err)) {
-                offerOfflineMode('Google could not be reached.');
-            } else {
-                setStatus(describeError(err, "Google's API could not be loaded"));
-            }
-        }
+// The two <script> tags in index.html are fetched once, at page load, and are
+// never retried. A page opened with no connection therefore had no way to ever
+// obtain them short of a full reload - which is why the offline sign-in button
+// could only offer to reload the page. Appending the tag again asks for it now.
+function loadScript(src) {
+    return new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = src;
+        el.async = true;
+        el.onload = () => resolve();
+        el.onerror = () => reject(new Error('Could not load ' + src));
+        (document.head || document.body).appendChild(el);
     });
 }
+
+async function ensureGoogleScripts() {
+    if (googleScriptsPresent()) return;
+    await Promise.all([
+        (typeof gapi === 'undefined' || typeof gapi.load !== 'function')
+            ? loadScript('https://apis.google.com/js/api.js') : null,
+        (typeof google === 'undefined' || !(google.accounts && google.accounts.oauth2))
+            ? loadScript('https://accounts.google.com/gsi/client') : null,
+    ].filter(Boolean));
+    if (!googleScriptsPresent()) throw new Error("Google's sign-in scripts could not be loaded.");
+}
+
+// One-time Google client setup: scripts, the Drive discovery document, and the
+// token client. This used to live inside the online-only boot path, so in
+// offline mode initAuth() had never run and the sign-in button was pressing a
+// null token client. It is now reachable from every sign-in entry point.
+//
+// A failed attempt clears itself so the next press tries again, rather than
+// leaving a rejected promise memoised forever.
+let googleReadyPromise = null;
+function ensureGoogleReady() {
+    if (googleReadyPromise) return googleReadyPromise;
+    googleReadyPromise = (async () => {
+        await ensureGoogleScripts();
+        await new Promise((resolve, reject) => {
+            const t = setTimeout(() => reject(new Error('Google API loader did not respond')), 20000);
+            gapi.load('client:picker', () => { clearTimeout(t); resolve(); });
+        });
+        await gapi.client.init({ apiKey: API_KEY });
+        await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest');
+        if (!isAuthReady()) {
+            initAuth({ onSignIn: startSignedInSession, onExpired: reportSignedOut });
+        }
+    })();
+    googleReadyPromise.catch(() => { googleReadyPromise = null; });
+    return googleReadyPromise;
+}
+
+async function boot() {
+    startConnectivityMonitor();
+    onConnectivityChange(handleConnectivityChange);
+
+    const btn = document.getElementById('signin-btn');
+    // This button had NO click handler at all: sign-in depended entirely on the
+    // silent attempt below succeeding, so whenever there was no live Google
+    // session the button did nothing at all when pressed.
+    if (btn) btn.onclick = () => attemptSignIn();
+
+    try {
+        await ensureGoogleReady();
+        if (btn) { btn.disabled = false; btn.textContent = 'Sign in with Google'; }
+        // Try a silent sign-in first: if access was granted before and the
+        // Google session is still live, this logs back in with no click.
+        trySilentSignIn();
+    } catch (err) {
+        console.error(err);
+        await offerOfflineMode(navigator.onLine === false || !state.online
+            ? 'You appear to be offline.'
+            : "Google's sign-in could not be reached.");
+    }
+}
 window.onload = boot;
+
+// ---------- connectivity ----------
+// Every reaction to the connection changing goes through here, so the banner,
+// the disabled controls and the info panel can never disagree with each other.
+function handleConnectivityChange(online) {
+    updateConnectionUi();
+    if (!online) return;
+    // Back online while running from the saved copy: try to pick the session up
+    // silently, so in the common case (the Google session is still live) the
+    // app simply becomes editable again with nothing to press.
+    if (state.offline) {
+        ensureGoogleReady()
+            .then(() => trySilentSignIn())
+            .catch(err => console.warn('Could not resume the session automatically:', err));
+    }
+}
+
+// Editing needs BOTH a signed-in session and a live connection; each on its own
+// is not enough, and a write attempted without either fails at the Drive call.
+function canEdit() { return !state.offline && state.online; }
+
+// One place that decides everything the connection affects on screen.
+function updateConnectionUi() {
+    const banner = document.getElementById('offline-banner');
+    if (banner) {
+        const show = state.offline || !state.online;
+        banner.classList.toggle('shown', show);
+        const text = document.getElementById('offline-banner-text');
+        const signIn = document.getElementById('offline-banner-btn');
+        if (text) {
+            text.textContent = !state.online
+                ? 'No internet connection - showing what is saved on this device. Changes are disabled.'
+                : 'Not signed in - showing your last saved copy. Sign in to make changes.';
+        }
+        // Only worth offering when there is a connection to sign in over.
+        if (signIn) signIn.style.display = (state.online && state.offline) ? 'inline-flex' : 'none';
+    }
+    applyConnectionRestrictions();
+    refreshInfoStatus();
+}
 
 // ---------- offline mode ----------
 // Offered only when there is actually something saved to show; without a
@@ -89,8 +171,15 @@ window.onload = boot;
 async function offerOfflineMode(reason) {
     const snap = await readSnapshot(SNAP.collections);
     const btn = document.getElementById('signin-btn');
-    btn.disabled = false;
-    btn.textContent = 'Sign in with Google';
+    if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Sign in with Google';
+        btn.onclick = () => attemptSignIn();
+    }
+    // boot() can reach this more than once now (a failed attempt, then a
+    // retry), and the note/button below would otherwise stack up.
+    const stale = document.getElementById('login-offline-note');
+    if (stale) stale.remove();
 
     if (!snap) {
         setStatus(reason + ' Nothing has been saved for offline use yet - ' +
@@ -117,7 +206,7 @@ async function offerOfflineMode(reason) {
 async function enterOfflineMode(collections) {
     state.offline = true;
     collectionsState = { fileId: null, collections: collections || [] };
-    document.getElementById('offline-banner').classList.add('shown');
+    updateConnectionUi();
     setStatus('');
     await showCollectionsScreen({ fromSnapshot: true });
 }
@@ -125,18 +214,21 @@ async function enterOfflineMode(collections) {
 // Leaving offline mode: a successful sign-in re-reads everything from Drive.
 function leaveOfflineMode() {
     state.offline = false;
-    document.getElementById('offline-banner').classList.remove('shown');
     resetLayouts();
+    updateConnectionUi();
 }
 
 // Applies the disabled look to everything that would write to Drive. They stay
 // visible rather than disappearing, so the app doesn't look like it has lost
 // features - the banner explains why they are greyed out.
-function applyOfflineRestrictions() {
-    const ids = ['export-btn', 'delete-collection-btn', 'cache-clear-btn'];
-    ids.forEach(id => {
+//
+// "Clear cache" is deliberately NOT in this list any more: it now clears the
+// on-device copies too, which works perfectly well with no connection.
+function applyConnectionRestrictions() {
+    const locked = !canEdit();
+    ['export-btn', 'delete-collection-btn'].forEach(id => {
         const el = document.getElementById(id);
-        if (el) el.classList.toggle('offline-disabled', state.offline);
+        if (el) el.classList.toggle('offline-disabled', locked);
     });
     const signinBtn = document.getElementById('info-signin-btn');
     if (signinBtn) signinBtn.style.display = state.offline ? 'flex' : 'none';
@@ -144,10 +236,17 @@ function applyOfflineRestrictions() {
 
 async function startSignedInSession() {
     signedOutShown = false;
+    // Signing in from offline mode should return you to what you were looking
+    // at, not throw you back to the collections list.
+    const reopen = state.offline ? currentCollection : null;
     leaveOfflineMode();
-    setStatus('Loading your collections...');
     try {
-        await showCollectionsScreen();
+        if (reopen) {
+            await openCollection(reopen, { inPlace: true });
+        } else {
+            setStatus('Loading your collections...');
+            await showCollectionsScreen();
+        }
     } catch (err) {
         console.error(err);
         setStatus(describeError(err, 'Your collections could not be loaded'));
@@ -173,7 +272,10 @@ function reportSignedOut() {
     const btn = document.createElement('button');
     btn.className = 'primary-btn';
     btn.textContent = 'Sign in with Google';
-    btn.onclick = () => { signedOutShown = false; promptSignIn(); };
+    // attemptSignIn, not promptSignIn: after a long gap the connection may be
+    // gone, or Google's client may need setting up again, and both are handled
+    // there rather than throwing on a null token client.
+    btn.onclick = () => { signedOutShown = false; attemptSignIn(); };
     contentEl.appendChild(btn);
     setStatus('Your Google sign-in expired. Please sign in again.');
 }
@@ -237,28 +339,35 @@ async function showCollectionsScreen(opts) {
         signIn.className = 'legend-btn';
         signIn.style.justifyContent = 'center';
         signIn.textContent = 'Sign in to Google';
-        signIn.onclick = () => attemptSignInFromOffline();
+        signIn.onclick = () => attemptSignIn();
         contentEl.appendChild(signIn);
     }
 }
 
-// Used by both the collections screen and the info panel. If Google's scripts
-// never loaded (the usual offline case) a reload is the only way to get them.
-async function attemptSignInFromOffline() {
-    if (navigator.onLine === false) {
-        await alertDialog('There is still no internet connection.', 'Cannot sign in');
-        return;
+// The single sign-in entry point, used by the login screen, the collections
+// screen, the offline banner and the info panel. It loads whatever part of
+// Google's client is still missing (including the two <script> tags themselves,
+// if the page was opened with no connection) and only then asks for a token.
+let signInInFlight = false;
+async function attemptSignIn() {
+    if (signInInFlight) return;
+    signInInFlight = true;
+    // Don't trust a stale flag for something the user just asked for.
+    await checkNow();
+    try {
+        if (!state.online) {
+            await alertDialog('There is still no internet connection, so Google cannot be reached.',
+                'Cannot sign in');
+            return;
+        }
+        await ensureGoogleReady();
+        promptSignIn();
+    } catch (err) {
+        console.error('Sign-in could not start:', err);
+        await alertDialog(describeError(err, 'Google could not be reached'), 'Cannot sign in');
+    } finally {
+        signInInFlight = false;
     }
-    if (!googleScriptsPresent()) {
-        // The scripts are fetched by <script> tags at page load; there is no
-        // way to obtain them now except to load the page again.
-        const go = await confirmDialog(
-            'The connection is back. The page needs to reload to sign in. Reload now?',
-            { title: 'Sign in', confirmLabel: 'Reload' });
-        if (go) location.reload();
-        return;
-    }
-    promptSignIn();
 }
 
 function addNewCollection() {
@@ -297,7 +406,7 @@ async function pickerCallback(data) {
 }
 
 // ---------- opening a collection ----------
-async function openCollection(col) {
+async function openCollection(col, opts) {
     contentEl.innerHTML = '';
     const p = document.createElement('p');
     p.textContent = `Opening "${col.name}"...`;
@@ -316,7 +425,7 @@ async function openCollection(col) {
         }
         setStatus('');
         currentFolderInfo = snap.folderInfo || null;
-        await showCollectionView(col, snap.value);
+        await showCollectionView(col, snap.value, opts);
         return;
     }
 
@@ -341,7 +450,7 @@ async function openCollection(col) {
         // Everything needed to show this collection again with no connection,
         // including the folder date the info panel displays.
         saveSnapshot(SNAP.collection(col.id), countries, { folderInfo });
-        await showCollectionView(col, countries);
+        await showCollectionView(col, countries, opts);
     } catch (err) {
         console.error(err);
         contentEl.innerHTML = '';
@@ -359,9 +468,9 @@ async function openCollection(col) {
                 useCache.textContent = 'Open the saved copy instead';
                 useCache.onclick = async () => {
                     state.offline = true;
-                    document.getElementById('offline-banner').classList.add('shown');
+                    updateConnectionUi();
                     currentFolderInfo = snap.folderInfo || null;
-                    await showCollectionView(col, snap.value);
+                    await showCollectionView(col, snap.value, opts);
                 };
                 contentEl.appendChild(useCache);
             }
@@ -375,7 +484,13 @@ async function openCollection(col) {
     }
 }
 
-async function showCollectionView(col, countries) {
+async function showCollectionView(col, countries, opts) {
+    // Re-opening the collection already on screen (a sign-in from offline mode
+    // reloads it from Drive): tear the old map down first, and take no extra
+    // history entry - the user did not navigate anywhere.
+    const inPlace = !!(opts && opts.inPlace);
+    if (inPlace) { destroyMap(); releaseModalObjectUrls(); }
+
     currentCollection = col;
     state.currentCollectionId = col.id;
     setModalCollectionName(col.name);
@@ -396,10 +511,10 @@ async function showCollectionView(col, countries) {
     document.getElementById('cv-title').textContent = col.name;
 
     renderViewToggle();
-    applyOfflineRestrictions();
+    updateConnectionUi();
     await initMap();
     renderList(); // after initMap, so countryNameLookup is populated
-    history.pushState({ screen: 'collection' }, '');
+    if (!inPlace) history.pushState({ screen: 'collection' }, '');
 }
 
 function goBackToCollections(fromPopstate) {
@@ -650,6 +765,86 @@ function renderThumbErrors() {
     });
 }
 
+// Both of these are LIVE state, so they get their own lines and are re-rendered
+// whenever the connection changes. The panel used to print one "Status" line
+// computed from a flag that was only ever set at startup, so it went on saying
+// "Signed in" long after the connection had gone.
+async function renderAppFacts() {
+    const appDl = document.getElementById('info-app');
+    appDl.innerHTML = '';
+    fact(appDl, 'Version', APP_VERSION);
+    fact(appDl, 'Connection', state.online ? 'Connected' : 'No connection');
+    fact(appDl, 'Account', state.offline
+        ? 'Not signed in - saved copy, changes disabled'
+        : (state.online ? 'Signed in' : 'Signed in - changes disabled until the connection returns'));
+    const snap = await readSnapshot(SNAP.collections);
+    if (snap && snap.savedAt) {
+        fact(appDl, 'Saved for offline', formatDate(new Date(snap.savedAt).toISOString()));
+    }
+}
+
+function infoModalOpen() {
+    return document.getElementById('cache-modal').style.display === 'block';
+}
+
+// Called from updateConnectionUi, so the panel corrects itself while it is open
+// rather than showing whatever was true when it was first drawn.
+function refreshInfoStatus() {
+    if (!infoModalOpen()) return;
+    renderAppFacts().catch(err => console.warn('Could not refresh the info panel:', err));
+}
+
+async function renderCacheStats() {
+    const statsEl = document.getElementById('cache-modal-stats');
+    const line = text => {
+        const d = document.createElement('div');
+        d.textContent = text;
+        statsEl.appendChild(d);
+        return d;
+    };
+
+    statsEl.textContent = 'Reading cache…';
+    let local = null;
+    try { local = await localCacheStats(); }
+    catch (err) { console.warn('Could not read the local cache:', err); }
+
+    statsEl.innerHTML = '';
+    // The device cache is what actually makes a photo appear instantly, so it
+    // is reported first - and reported at all, which it never used to be.
+    if (local) {
+        const parts = [`${local.thumbs} thumbnail${local.thumbs === 1 ? '' : 's'} ` +
+                       `≈ ${formatSize(local.thumbBytes)}`];
+        if (local.fulls) {
+            parts.push(`${local.fulls} full-size photo${local.fulls === 1 ? '' : 's'} ` +
+                       `≈ ${formatSize(local.fullBytes)}`);
+        }
+        line('On this device: ' + parts.join(', '));
+    } else {
+        line('On this device: the cache could not be read.');
+    }
+
+    if (!state.online) {
+        line('In Drive: needs a connection.');
+        return;
+    }
+    const driveLine = line('In Drive: reading…');
+    try {
+        const index = await getDriveThumbIndex();
+        const count = index.size;
+        const totalBytes = [...index.values()].reduce((sum, v) => sum + (v.size || 0), 0);
+        driveLine.textContent = `In Drive: ${count} thumbnail${count === 1 ? '' : 's'} ` +
+                                `≈ ${formatSize(totalBytes)}`;
+        if (lastThumbUploadError) {
+            const warn = document.createElement('div');
+            warn.style.cssText = 'color:var(--accent-none);font-size:11px;margin-top:8px;';
+            warn.textContent = 'Last upload error: ' + lastThumbUploadError;
+            statsEl.appendChild(warn);
+        }
+    } catch (err) {
+        driveLine.textContent = describeError(err, 'In Drive: the details could not be read');
+    }
+}
+
 async function openInfoModal() {
     document.getElementById('cache-modal-backdrop').style.display = 'block';
     document.getElementById('cache-modal').style.display = 'block';
@@ -669,39 +864,13 @@ async function openInfoModal() {
     document.getElementById('export-btn').style.display = hasCollection ? 'flex' : 'none';
     document.getElementById('delete-collection-btn').style.display = hasCollection ? 'flex' : 'none';
 
-    const appDl = document.getElementById('info-app');
-    appDl.innerHTML = '';
-    fact(appDl, 'Version', APP_VERSION);
-    fact(appDl, 'Status', state.offline ? 'Offline - saved copy, changes disabled' : 'Signed in');
-    if (state.offline) {
-        const snap = await readSnapshot(SNAP.collections);
-        if (snap && snap.savedAt) fact(appDl, 'Last synced', formatDate(new Date(snap.savedAt).toISOString()));
-    }
-
+    await renderAppFacts();
     renderThumbErrors();
-    applyOfflineRestrictions();
-
-    const statsEl = document.getElementById('cache-modal-stats');
-    if (state.offline) {
-        statsEl.textContent = 'Thumbnail cache details need a connection.';
-        return;
-    }
-    statsEl.textContent = 'Loading cache info…';
-    try {
-        const index = await getDriveThumbIndex();
-        const count = index.size;
-        const totalBytes = [...index.values()].reduce((sum, v) => sum + (v.size || 0), 0);
-        const mb = (totalBytes / (1024 * 1024)).toFixed(1);
-        statsEl.textContent = `${count} thumbnail${count === 1 ? '' : 's'} cached in Drive — ≈ ${mb} MB`;
-        if (lastThumbUploadError) {
-            const warn = document.createElement('div');
-            warn.style.cssText = 'color:var(--accent-none);font-size:11px;margin-top:8px;';
-            warn.textContent = 'Last upload error: ' + lastThumbUploadError;
-            statsEl.appendChild(warn);
-        }
-    } catch (err) {
-        statsEl.textContent = describeError(err, 'The cache details could not be read');
-    }
+    applyConnectionRestrictions();
+    // The panel is the one place the connection is stated outright, so take the
+    // chance to make sure the answer is current rather than up to 20s old.
+    checkNow();
+    await renderCacheStats();
 }
 
 function closeCacheModal() {
@@ -714,18 +883,34 @@ document.getElementById('cache-modal-backdrop').onclick = closeCacheModal;
 document.getElementById('cache-close-btn').onclick = closeCacheModal;
 document.getElementById('export-btn').onclick = exportWholeCollection;
 document.getElementById('delete-collection-btn').onclick = removeOpenCollection;
-document.getElementById('info-signin-btn').onclick = () => { closeCacheModal(); attemptSignInFromOffline(); };
+document.getElementById('info-signin-btn').onclick = () => { closeCacheModal(); attemptSignIn(); };
+const bannerSignInBtn = document.getElementById('offline-banner-btn');
+if (bannerSignInBtn) bannerSignInBtn.onclick = () => attemptSignIn();
+
+// Clears BOTH caches. It used to delete only the Drive-side copies, so every
+// picture still appeared instantly - offline included - immediately after
+// "Clear cache" reported that nothing was cached. The device copies are what
+// make a photo instant, and they were never touched.
 document.getElementById('cache-clear-btn').onclick = async () => {
     const ok = await confirmDialog(
-        "Delete all cached thumbnails from Drive? They'll be regenerated automatically the next time each photo is viewed.",
+        state.online
+            ? 'Delete every cached thumbnail, both on this device and in Drive? Photos are ' +
+              'downloaded and shrunk again the next time each one is viewed.'
+            : 'There is no connection, so only the copies stored on this device can be cleared. ' +
+              'Photos will not be available offline until you reconnect and view them again. Continue?',
         { title: 'Clear cache', confirmLabel: 'Clear' }
     );
     if (!ok) return;
     const statsEl = document.getElementById('cache-modal-stats');
     statsEl.textContent = 'Clearing…';
     try {
-        await clearDriveThumbCache();
-        statsEl.textContent = 'Cache cleared.';
+        // Object URLs minted before the clear still point at blobs held in
+        // memory, so a picture on screen would survive it. Dropping them means
+        // the next view genuinely re-reads.
+        releaseModalObjectUrls();
+        await clearLocalImageCache();
+        if (state.online) await clearDriveThumbCache();
+        await renderCacheStats();
     } catch (err) {
         statsEl.textContent = describeError(err, 'The cache could not be cleared');
     }

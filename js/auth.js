@@ -32,13 +32,21 @@ export function initAuth({ onSignIn, onExpired }) {
     return tokenClient;
 }
 
+// True once initAuth has run. Offline, it never had: initAuth was reached only
+// through the online boot path, so the offline "Sign in" button called
+// promptSignIn() on a null client and died with a TypeError before Google was
+// ever contacted. Callers check this (or let the throw below tell them).
+export function isAuthReady() { return !!tokenClient; }
+
 // Shows Google's account chooser.
 export function promptSignIn() {
+    if (!tokenClient) throw new Error('Google sign-in has not been set up yet.');
     tokenClient.requestAccessToken();
 }
 
 // Tries to sign in with no UI at all, using an existing Google session.
 export function trySilentSignIn() {
+    if (!tokenClient) throw new Error('Google sign-in has not been set up yet.');
     tokenClient.requestAccessToken({ prompt: '' });
 }
 

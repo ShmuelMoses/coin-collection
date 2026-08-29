@@ -11,7 +11,7 @@
 // served stale. They simply fail offline, which app.js handles by staying on
 // the sign-in screen.
 
-const VERSION = 'v2.14';
+const VERSION = 'v2.15';
 const SHELL_CACHE = 'collections-shell-' + VERSION;
 
 // Everything the app needs to boot with no network.
@@ -38,6 +38,7 @@ const SHELL_ASSETS = [
     './js/list.js',
     './js/map.js',
     './js/modal.js',
+    './js/net.js',
     './js/state.js',
     './js/util.js',
 ];
@@ -75,6 +76,12 @@ self.addEventListener('fetch', event => {
     // Never touch Google's APIs or anything cross-origin: those are live data
     // and auth, and a stale copy would be worse than a clean failure.
     if (url.origin !== self.location.origin) return;
+
+    // The connectivity probe (js/net.js) must reach the network or fail. If it
+    // were answered from the cache like every other same-origin request, it
+    // would succeed while the device was offline and the app would never notice
+    // the connection had gone - which is the whole point of the probe.
+    if (url.searchParams.has('__netprobe')) return;
 
     // Network-first for the shell, so a deployed update is picked up as soon as
     // there is a connection, with the cache as the offline fallback. (Cache-

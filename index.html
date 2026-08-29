@@ -186,8 +186,10 @@
         .icon-btn:hover { border-color: var(--accent-owned); }
         .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
         #cv-main { flex: 1 1 auto; position: relative; min-height: 0; transition: filter 0.2s; }
-        /* Shown only in offline mode, so the reason the editing controls are
-           greyed out is stated rather than left to be guessed at. */
+        /* Shown whenever editing is disabled - no connection, or not signed in -
+           so the reason the controls are greyed out is stated rather than left
+           to be guessed at. The text is set from JS, because which of those two
+           it is changes while the app is open. */
         #offline-banner {
             display: none; flex: 0 0 auto;
             align-items: center; gap: 8px;
@@ -197,6 +199,14 @@
         }
         #offline-banner.shown { display: flex; }
         #offline-banner svg { flex: 0 0 auto; color: var(--accent-none); }
+        #offline-banner span { flex: 1 1 auto; }
+        #offline-banner-btn {
+            flex: 0 0 auto; align-items: center;
+            padding: 3px 12px; font: inherit; font-size: 12px; cursor: pointer;
+            color: var(--text); background: var(--panel);
+            border: 1px solid var(--border); border-radius: 4px;
+        }
+        #offline-banner-btn:hover { border-color: var(--accent-owned); }
         /* Anything that would write to Drive, while offline. Kept visible
            rather than hidden so the app doesn't appear to lose features. */
         .offline-disabled {
@@ -461,7 +471,8 @@
         </div>
         <div id="offline-banner" role="status">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.7 13.9a5 5 0 0 0-6.6-.7"/><path d="M5 12.5a10 10 0 0 1 5.2-2.7"/><path d="M10.7 5.1A16 16 0 0 1 22 8.8"/><path d="M2 8.8a16 16 0 0 1 3.8-2.4"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-            <span>Offline - showing your last saved copy. Changes are disabled until you sign in.</span>
+            <span id="offline-banner-text">No internet connection - showing what is saved on this device. Changes are disabled.</span>
+            <button id="offline-banner-btn" type="button" style="display:none;">Sign in</button>
         </div>
         <div id="cv-main">
             <div id="map"></div>

@@ -4,6 +4,7 @@
 
 import { withAuth, driveFetch } from './auth.js';
 import { resizeDims } from './util.js';
+import { state } from './state.js';
 
 // ---------- IndexedDB ----------
 let dbPromise = null;
@@ -83,6 +84,44 @@ function evictFullImages() {
             cursor.continue();
         };
         tx.oncomplete = () => { console.warn(`[cache] evicted ${removed} full-size images to free space`); resolve(removed); };
+        tx.onerror = () => reject(tx.error);
+    }));
+}
+
+// What is actually stored on THIS device. "Clear cache" used to delete only the
+// Drive-side copies and then report "0 thumbnails cached", which was true of
+// Drive and completely misleading about the device: every picture still
+// appeared instantly, offline included, because the blobs below were untouched.
+export function localCacheStats() {
+    return getDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction('images', 'readonly');
+        const req = tx.objectStore('images').openCursor();
+        const stats = { thumbs: 0, thumbBytes: 0, fulls: 0, fullBytes: 0 };
+        req.onsuccess = () => {
+            const cursor = req.result;
+            if (!cursor) return;
+            // Reading .size does not read the bytes: a Blob comes back from
+            // IndexedDB as a reference, so this stays cheap on a big cache.
+            const size = (cursor.value && cursor.value.size) || 0;
+            if (String(cursor.key).endsWith('_full')) { stats.fulls++; stats.fullBytes += size; }
+            else { stats.thumbs++; stats.thumbBytes += size; }
+            cursor.continue();
+        };
+        tx.oncomplete = () => resolve(stats);
+        tx.onerror = () => reject(tx.error);
+    }));
+}
+
+// Empties the on-device blob store: thumbnails and full-size originals alike.
+export function clearLocalImageCache() {
+    return getDB().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction('images', 'readwrite');
+        tx.objectStore('images').clear();
+        tx.oncomplete = () => {
+            // The quota that made us stop caching originals has just been freed.
+            skipFullImageCaching = false;
+            resolve();
+        };
         tx.onerror = () => reject(tx.error);
     }));
 }
@@ -491,6 +530,15 @@ async function getThumbnailBlobUrl(fileId) {
         // A broken IndexedDB must not stop images loading; it only means every
         // view costs a download.
         noteThumbError('local-cache', fileId, err);
+    }
+
+    // Not on the device and no connection: say so at once. Both remaining
+    // steps need the network, and letting them run means a spinner that sits
+    // there for the full two-minute download bound before failing.
+    if (!state.online) {
+        const err = new Error('Not saved on this device, and there is no connection to fetch it.');
+        noteThumbError('offline', fileId, err);
+        throw err;
     }
 
     // 2. The shared Drive-side thumbnail, if this or another device made one.

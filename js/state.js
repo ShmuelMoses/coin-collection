@@ -36,6 +36,12 @@ export const state = {
     // every control that would change something is disabled rather than left
     // to fail at the moment it is pressed.
     offline: false,
+    // Whether the network is actually reachable RIGHT NOW, maintained by
+    // net.js. Deliberately separate from `offline` above: those are different
+    // questions ("am I signed in?" vs "is there a connection?") and conflating
+    // them is why the banner used to be decided once at startup and then never
+    // corrected when the connection came or went.
+    online: true,
 };
 
 export function resetCollectionState() {

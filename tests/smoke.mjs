@@ -69,7 +69,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cache-modal-backdrop', 'cache-modal', 'cache-modal-stats', 'cache-modal-actions',
     'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
     'info-collection', 'info-app', 'info-errors', 'delete-collection-btn',
-    'offline-banner', 'info-signin-btn',
+    'offline-banner', 'info-signin-btn', 'offline-banner-text', 'offline-banner-btn',
 ].forEach(id => mkEl(id));
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
@@ -77,9 +77,12 @@ byId.get('search-ghost').value = '';
 const documentElement = new El('html');
 const body = new El('body');
 
+const head = new El('head');
 global.document = {
     documentElement,
+    head,
     body,
+    hidden: false,
     getElementById: id => {
         const el = byId.get(id);
         if (!el) { throw new Error(`getElementById('${id}') returned null - that id is not in index.html`); }
@@ -87,6 +90,7 @@ global.document = {
     },
     createElement: tag => new El(tag),
     createDocumentFragment: () => new El('fragment'),
+    createTextNode: t => { const e = new El('#text'); e.textContent = String(t); return e; },
     querySelectorAll: () => [],
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -107,14 +111,93 @@ global.window = {
 };
 global.history = { pushState() {}, back() {} };
 Object.defineProperty(global, 'navigator', {
-    value: { storage: null, share: null, serviceWorker: null }, configurable: true, writable: true
+    value: { storage: null, share: null, serviceWorker: null, onLine: true }, configurable: true, writable: true
 });
 global.requestAnimationFrame = fn => setTimeout(fn, 0);
 global.URL.createObjectURL = () => 'blob:stub';
 global.URL.revokeObjectURL = () => {};
 global.DOMParser = class { parseFromString() { return { documentElement: new El('svg') }; } };
-global.indexedDB = { open() { const r = {}; setTimeout(() => { r.result = null; r.onerror && r.onerror(); }, 0); return r; } };
+// A small in-memory IndexedDB. The previous stub simply failed to open, so the
+// cache code was never actually exercised - and "Clear cache" not touching the
+// on-device store is exactly the kind of bug that hides behind a database that
+// never works in the tests.
+const idbStores = { images: new Map(), meta: new Map() };
+
+function makeTransaction(name) {
+    const map = idbStores[name];
+    const tx = { error: null };
+    let pending = 0, settled = false;
+    const begin = () => { pending++; };
+    const end = () => {
+        if (--pending > 0 || settled) return;
+        settled = true;
+        setTimeout(() => tx.oncomplete && tx.oncomplete(), 0);
+    };
+    const request = run => {
+        begin();
+        const req = {};
+        setTimeout(() => {
+            try { req.result = run(); req.onsuccess && req.onsuccess(); }
+            catch (e) { req.error = e; req.onerror && req.onerror(); }
+            end();
+        }, 0);
+        return req;
+    };
+    // The cursor keeps the transaction open until it is exhausted, which is what
+    // makes a stats walk over every entry finish before oncomplete fires.
+    const cursor = keysOnly => {
+        begin();
+        const req = {};
+        const entries = [...map.entries()];
+        let i = 0;
+        const step = () => {
+            if (i >= entries.length) {
+                req.result = null;
+                req.onsuccess && req.onsuccess();
+                end();
+                return;
+            }
+            const [key, value] = entries[i++];
+            req.result = { key, value: keysOnly ? undefined : value, continue: () => setTimeout(step, 0) };
+            req.onsuccess && req.onsuccess();
+        };
+        setTimeout(step, 0);
+        return req;
+    };
+    tx.objectStore = () => ({
+        get: key => request(() => map.get(key) ?? null),
+        put: (value, key) => request(() => { map.set(key, value); }),
+        delete: key => request(() => { map.delete(key); }),
+        clear: () => request(() => { map.clear(); }),
+        openCursor: () => cursor(false),
+        openKeyCursor: () => cursor(true),
+    });
+    return tx;
+}
+
+const fakeDB = {
+    objectStoreNames: { contains: n => n in idbStores },
+    createObjectStore: n => { idbStores[n] ||= new Map(); },
+    transaction: name => makeTransaction(name),
+};
+global.indexedDB = {
+    open() {
+        const req = {};
+        setTimeout(() => {
+            req.result = fakeDB;
+            req.onupgradeneeded && req.onupgradeneeded();
+            req.onsuccess && req.onsuccess();
+        }, 0);
+        return req;
+    }
+};
+
+let probeOnline = true;   // what the stubbed network says about reachability
 global.fetch = async (url) => {
+    if (String(url).includes('__netprobe')) {
+        if (!probeOnline) throw new TypeError('Failed to fetch');
+        return { ok: true, json: async () => ({}), text: async () => '' };
+    }
     if (String(url).includes('countries.geojson')) {
         return { ok: true, json: async () => GEOJSON };
     }
@@ -440,8 +523,11 @@ console.log('\nThumbnail queue (the Android failure)');
     // exhausted the phone and ended in "Could not load".
     let inFlight = 0, peak = 0;
     const prevFetch = global.fetch;
+    // Only this block's own ids are counted: the export test above can still
+    // have a download in flight when this starts, and one stray request from a
+    // finished test must not be read as the queue letting four jobs run.
     global.fetch = async (url) => {
-        if (String(url).includes('/drive/v3/files/')) {
+        if (/\/drive\/v3\/files\/img\d/.test(String(url))) {
             inFlight++; peak = Math.max(peak, inFlight);
             await new Promise(r => setTimeout(r, 15));
             inFlight--;
@@ -543,6 +629,147 @@ console.log('\nOffline mode');
     check('layouts load offline without touching Drive', !!l && typeof l.data === 'object');
     state.state.offline = false;
     layouts.resetLayouts();
+}
+
+console.log('\nSigning in actually starts a sign-in (item 1)');
+{
+    const auth = await import('./js/auth.js');
+    // boot() is what wires the login screen up; window.onload is never fired
+    // for us here, so call it the way the browser would.
+    await global.window.onload();
+    await new Promise(r => setTimeout(r, 30));
+
+    const btn = byId.get('signin-btn');
+    check('the sign-in button has a click handler at all',
+        typeof btn.onclick === 'function',
+        'the button had NO handler: pressing it did nothing whenever the silent sign-in found no session');
+    check('the token client was set up, so a press can reach Google',
+        auth.isAuthReady(),
+        'initAuth ran only on the online boot path, so offline the button pressed a null client');
+
+    let asked = false;
+    const prevGoogle = global.google.accounts.oauth2.initTokenClient;
+    check('promptSignIn refuses clearly instead of throwing a TypeError', (() => {
+        try { auth.promptSignIn(); asked = true; return true; }
+        catch (e) { return /not been set up/.test(e.message); }
+    })(), 'asked=' + asked);
+    global.google.accounts.oauth2.initTokenClient = prevGoogle;
+}
+
+console.log('\nConnectivity monitoring (items 3 and 4)');
+{
+    const net = await import('./js/net.js');
+    const fs = await import('node:fs');
+
+    // The probe must be a request the service worker will NOT answer from its
+    // cache, or it would report success while the device is offline and the
+    // banner would never appear. The two halves live in different files, so
+    // check they still agree on the marker.
+    let probedUrl = null;
+    const prevFetch = global.fetch;
+    global.fetch = async (url, init) => { probedUrl = String(url); return prevFetch(url, init); };
+    await net.checkNow();
+    global.fetch = prevFetch;
+    check('the connectivity probe is marked so the service worker lets it through',
+        /__netprobe=/.test(probedUrl || ''), String(probedUrl));
+    const sw = fs.readFileSync('./sw.js', 'utf8');
+    check('sw.js actually bypasses that marker',
+        /__netprobe/.test(sw) && /searchParams\.has\('__netprobe'\)/.test(sw),
+        'the probe would be served from the cache and always look online');
+
+    // Losing and regaining the connection must be published, not discovered at
+    // the next reload: that is exactly what did not happen before.
+    const seen = [];
+    const stop = net.onConnectivityChange(v => seen.push(v));
+    // Shortened so the test runs in milliseconds; what is under test is that
+    // the monitor re-checks AT ALL without anyone asking, not how long it waits.
+    net.POLL.whenOnline = 25;
+    net.POLL.whenOffline = 25;
+    await net.checkNow();          // re-arms the timer at the short interval
+
+    // Nothing below calls checkNow(): the network simply changes and the app is
+    // given a moment to notice by itself. That is the whole of items 3 and 4 -
+    // before this, the connection was only ever consulted at startup.
+    probeOnline = false;
+    await new Promise(r => setTimeout(r, 200));
+    check('a dropped connection is noticed by the poll, with nothing pressed',
+        state.state.online === false,
+        'the app only ever learned about the network at startup');
+    check('the drop is announced to the app', seen[seen.length - 1] === false, JSON.stringify(seen));
+    check('the banner is shown without a reload',
+        byId.get('offline-banner').classList.contains('shown'));
+    check('the banner says what is actually wrong',
+        /no internet connection/i.test(byId.get('offline-banner-text').textContent),
+        byId.get('offline-banner-text').textContent);
+
+    // Item 4 is specifically that NOBODY has to press anything: the monitor has
+    // to re-check on its own. Nothing below calls checkNow() - the connection is
+    // simply restored and the app is given a moment to notice by itself.
+    probeOnline = true;
+    await new Promise(r => setTimeout(r, 200));
+    check('the connection returning is noticed by the poll, with nothing pressed',
+        state.state.online === true,
+        'the app only ever learned about the network at startup');
+    check('the notice clears by itself when the network is back',
+        !byId.get('offline-banner').classList.contains('shown'));
+    net.POLL.whenOffline = 5000;
+    net.POLL.whenOnline = 5000;
+    stop();
+}
+
+console.log('\nInfo panel reports LIVE state (item 2)');
+{
+    const factsOf = () => byId.get('info-app').children.map(c => c.textContent);
+
+    byId.get('info-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 30));
+    check('the panel states the connection separately from the account',
+        factsOf().includes('Connection') && factsOf().includes('Account'), JSON.stringify(factsOf()));
+    check('connected is reported while connected',
+        factsOf()[factsOf().indexOf('Connection') + 1] === 'Connected', JSON.stringify(factsOf()));
+
+    // The bug: the panel went on saying "Signed in" after the connection went,
+    // because the status was computed once from a flag set at startup.
+    const net = await import('./js/net.js');
+    probeOnline = false;
+    await net.checkNow();
+    await new Promise(r => setTimeout(r, 30));
+    check('losing the connection updates the OPEN panel',
+        factsOf()[factsOf().indexOf('Connection') + 1] === 'No connection', JSON.stringify(factsOf()));
+    probeOnline = true;
+    await net.checkNow();
+    await new Promise(r => setTimeout(r, 30));
+    byId.get('cache-close-btn').dispatch('click');
+}
+
+console.log('\nClear cache clears the DEVICE cache too (item 5)');
+{
+    const cache = await import('./js/cache.js');
+
+    // Two thumbnails and one full-size photo sitting on the device - the state
+    // the app is in after browsing a few countries.
+    idbStores.images.set('p1_thumb', new Blob(['t'.repeat(1000)]));
+    idbStores.images.set('p2_thumb', new Blob(['t'.repeat(2000)]));
+    idbStores.images.set('p1_full', new Blob(['f'.repeat(9000)]));
+
+    const stats = await cache.localCacheStats();
+    check('the device cache is measured at all (it was never reported)',
+        stats.thumbs === 2 && stats.fulls === 1, JSON.stringify(stats));
+    check('and its size is measured', stats.thumbBytes === 3000 && stats.fullBytes === 9000,
+        JSON.stringify(stats));
+
+    // The actual bug: clearing Drive left every photo on the device, so they
+    // still appeared instantly - offline included - while the panel reported
+    // an empty cache.
+    await cache.clearDriveThumbCache();
+    const afterDrive = await cache.localCacheStats();
+    check('clearing Drive alone does NOT empty the device - this is why photos still loaded',
+        afterDrive.thumbs + afterDrive.fulls === 3, JSON.stringify(afterDrive));
+
+    await cache.clearLocalImageCache();
+    const afterLocal = await cache.localCacheStats();
+    check('clearing the device cache really empties it',
+        afterLocal.thumbs === 0 && afterLocal.fulls === 0, JSON.stringify(afterLocal));
 }
 
 console.log('\nDate formatting');
