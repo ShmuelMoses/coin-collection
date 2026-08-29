@@ -33,6 +33,10 @@ function getDB() {
         };
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
+        // Without this, another tab holding the database open leaves open()
+        // in a state where NEITHER onsuccess nor onerror ever fires - the
+        // promise hangs forever and every image behind it spins indefinitely.
+        request.onblocked = () => reject(new Error('IndexedDB is blocked by another tab of this app'));
     });
     return dbPromise;
 }
@@ -69,6 +73,30 @@ const cacheDelete = key => storeDelete('images', key);
 export const getMeta = key => storeGet('meta', key);
 export const setMeta = (key, value) => storePut('meta', key, value);
 
+// Rejects instead of hanging. Several links in the thumbnail chain (an
+// IndexedDB transaction, a fetch on a flaky mobile connection) can in practice
+// settle neither way; without this the UI shows a spinner forever and there is
+// nothing to diagnose.
+function withTimeout(promise, ms, label) {
+    let timer;
+    return Promise.race([
+        promise.finally(() => clearTimeout(timer)),
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+        })
+    ]);
+}
+
+// Recent thumbnail failures, surfaced in the info panel so a problem on a
+// phone can be read without plugging it into a desktop for DevTools.
+export const thumbErrors = [];
+function noteThumbError(stage, fileId, err) {
+    const message = (err && err.message) ? err.message : String(err);
+    thumbErrors.unshift({ when: Date.now(), stage, fileId, message });
+    if (thumbErrors.length > 12) thumbErrors.length = 12;
+    console.warn(`[thumbnail:${stage}]`, fileId, message);
+}
+
 // ---------- full images ----------
 // Google's fast thumbnailLink CDN blocks browser access, so the full image is
 // downloaded once and shrunk locally, and that small version cached separately.
@@ -88,7 +116,9 @@ export async function fetchFullImageBlob(fileId) {
         const text = await blob.text().catch(() => '');
         throw new Error(`Drive did not return image data for file ${fileId} (got "${blob.type}"): ${text.slice(0, 300)}`);
     }
-    await cacheSet(cacheKey, blob);
+    // Not awaited: storing it is an optimisation for next time, and a stalled
+    // IndexedDB write must never hold up the picture the user is waiting for.
+    cacheSet(cacheKey, blob).catch(err => noteThumbError('cache-write', fileId, err));
     return blob;
 }
 
@@ -286,40 +316,62 @@ async function uploadThumbnailToDrive(fileId, thumbBlob) {
     }
 }
 
+// How long any single stage may take before it is treated as failed.
+const CACHE_READ_TIMEOUT_MS = 8000;
+const INDEX_TIMEOUT_MS = 10000;
+const DOWNLOAD_TIMEOUT_MS = 60000;
+
 async function getThumbnailBlobUrl(fileId) {
     const cacheKey = fileId + '_thumb';
-    const cached = await cacheGet(cacheKey);
-    if (cached) return URL.createObjectURL(cached);
 
+    // 1. Already in this browser's cache - the fast path, no network at all.
     try {
-        const index = await getDriveThumbIndex();
+        const cached = await withTimeout(cacheGet(cacheKey), CACHE_READ_TIMEOUT_MS, 'local cache read');
+        if (cached) return URL.createObjectURL(cached);
+    } catch (err) {
+        // A broken IndexedDB must not stop images loading; it only means every
+        // view costs a download.
+        noteThumbError('local-cache', fileId, err);
+    }
+
+    // 2. The shared Drive-side thumbnail, if this or another device made one.
+    //
+    // The index is ONE memoised promise shared by every thumbnail, so if it
+    // hangs, every image on the screen hangs behind it - which is exactly what
+    // "none of the pictures load, they just spin" looks like. It is therefore
+    // raced against a timeout, and a slow or broken index simply falls through
+    // to the full-size download below instead of blocking the whole modal.
+    try {
+        const index = await withTimeout(getDriveThumbIndex(), INDEX_TIMEOUT_MS, 'Drive thumbnail index');
         const thumbName = fileId + '_thumb.jpg';
         const entry = index.get(thumbName);
         if (entry) {
             try {
-                const thumbBlob = await fetchDriveThumbBlob(entry.id);
-                await cacheSet(cacheKey, thumbBlob);
+                const thumbBlob = await withTimeout(
+                    fetchDriveThumbBlob(entry.id), DOWNLOAD_TIMEOUT_MS, 'cached thumbnail download');
+                cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
                 return URL.createObjectURL(thumbBlob);
             } catch (err) {
-                // 404 means this thumbnail was deleted elsewhere (e.g. "Clear
-                // cache" on another device). Drop the stale entry so we stop
-                // retrying it, and regenerate below.
+                // 404 means it was deleted elsewhere (e.g. "Clear cache" on
+                // another device). Drop the stale entry and regenerate below.
                 if (err && err.status === 404) {
                     index.delete(thumbName);
                     persistThumbIndex(index, null);
                 } else {
-                    throw err;
+                    noteThumbError('drive-thumb', fileId, err);
                 }
             }
         }
     } catch (err) {
-        console.warn('Drive thumbnail lookup failed for', fileId, '- falling back to full image:', err);
+        noteThumbError('index', fileId, err);
     }
 
-    const fullBlob = await fetchFullImageBlob(fileId);
+    // 3. Last resort: download the original and shrink it here.
+    const fullBlob = await withTimeout(
+        fetchFullImageBlob(fileId), DOWNLOAD_TIMEOUT_MS, 'full image download');
     const thumbBlob = await resizeImageBlob(fullBlob, 320);
-    await cacheSet(cacheKey, thumbBlob);
-    uploadThumbnailToDrive(fileId, thumbBlob); // don't await - background
+    cacheSet(cacheKey, thumbBlob).catch(err => noteThumbError('cache-write', fileId, err));
+    uploadThumbnailToDrive(fileId, thumbBlob); // background, never awaited
     return URL.createObjectURL(thumbBlob);
 }
 

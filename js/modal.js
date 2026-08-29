@@ -41,6 +41,22 @@ function setShareSelectMode(on) {
     renderModalContent(currentModalCode);
 }
 
+// Shown in place of a thumbnail that could not be produced. An image that
+// silently never appears is impossible to report; this says what went wrong.
+function thumbErrorCell(img, err) {
+    const box = document.createElement('div');
+    box.className = 'thumb-error';
+    box.title = (img.name || '') + '\n' + ((err && err.message) ? err.message : String(err));
+    const mark = document.createElement('div');
+    mark.className = 'thumb-error-mark';
+    mark.textContent = '!';
+    const label = document.createElement('div');
+    label.className = 'thumb-error-text';
+    label.textContent = 'Could not load';
+    box.append(mark, label);
+    return box;
+}
+
 // ---------- normal view ----------
 function renderImageGroup(images) {
     const grid = document.createElement('div');
@@ -77,7 +93,13 @@ function renderImageGroup(images) {
         wrapper.appendChild(el);
         modalThumbUrl(img.id)
             .then(url => { el.src = url; spinner.remove(); })
-            .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); spinner.remove(); });
+            .catch(err => {
+                // Say so in the cell rather than leaving a blank box or an
+                // endless spinner - the reason is also kept for the info panel.
+                spinner.remove();
+                el.remove();
+                wrapper.appendChild(thumbErrorCell(img, err));
+            });
 
         grid.appendChild(wrapper);
     });
@@ -160,7 +182,11 @@ function renderOrganizeSection(uncategorizedRaw, allOwnImages) {
         imgBox.appendChild(el);
         modalThumbUrl(img.id)
             .then(url => { el.src = url; spinner.remove(); })
-            .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); el.alt = '⚠'; spinner.remove(); });
+            .catch(err => {
+                spinner.remove();
+                el.remove();
+                imgBox.appendChild(thumbErrorCell(img, err));
+            });
 
         const dpad = buildDpad(posInCategory, categoryLength);
         const buttons = dpad.querySelectorAll('button');

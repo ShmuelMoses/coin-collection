@@ -101,87 +101,76 @@
         #status { font-size: 13px; color: var(--text-dim); margin-top: 16px; }
 
         /* ===== Collection view (map/list/search/modal) ===== */
-        #collection-view { display: flex; height: 100vh; width: 100vw; position: fixed; top:0; left:0; }
-        /* Desktop: the sidebar is a floating card over the map (not a full-height
-           column) - it takes itself out of the flex layout via position:absolute,
-           so #cv-main automatically expands to fill the whole viewport underneath
-           it. Height is automatic, based on its own content (how many buttons/
-           rows it has), capped so it never runs off the bottom of a short window. */
-        /* #cv-sidebar lays its 3 children out with flexbox (not just plain
-           block stacking) purely so `order` can put them in a different
-           visual order on phones (see the media query below) without
-           needing separate/duplicated markup: the title, the version
-           info button, and the controls row (icon buttons + search box). */
-        #cv-sidebar {
-            position: absolute; top: 20px; left: 20px; z-index: 500;
-            width: 230px; max-height: calc(100vh - 40px); overflow-y: auto;
-            background: var(--bg-translucent); backdrop-filter: blur(6px); color: var(--text);
-            padding: 20px; border: 1px solid var(--border); border-radius: 10px;
-            box-shadow: 0 4px 30px rgba(0,0,0,0.35);
+        /* The controls are a bar across the TOP at every width. On desktop they
+           used to be a floating card over the map, which permanently covered a
+           corner of it (and forced #list-view to carry a matching left padding
+           so country names weren't hidden underneath). A full-width bar costs a
+           little height and hides nothing. */
+        #collection-view {
             display: flex; flex-direction: column;
+            height: 100vh; width: 100vw; position: fixed; top: 0; left: 0;
         }
-        #cv-title { order: 1; font-size: 24px; margin: 0 0 16px 0; color: var(--accent-owned); text-align: center; }
-        /* Replaces the old version-number caption. Same slot in the sidebar,
-           but it now opens a panel with everything about the open collection,
-           not just the thumbnail cache. */
+        #cv-sidebar {
+            flex: 0 0 auto;
+            background: var(--bg-solid); color: var(--text);
+            border-bottom: 1px solid var(--border);
+            padding: 10px 16px;
+            display: flex; align-items: center; gap: 14px;
+        }
+        #cv-title {
+            order: 1; font-size: 22px; margin: 0; color: var(--accent-owned);
+            white-space: nowrap; flex: 0 0 auto;
+        }
+        #cv-controls-row {
+            order: 2; flex: 1 1 auto;
+            display: flex; align-items: center; gap: 8px; min-width: 0;
+        }
+        #icon-row { display: flex; gap: 6px; margin: 0; flex: 0 0 auto; }
+        .icon-btn {
+            flex: 0 0 34px; width: 34px; height: 34px; aspect-ratio: auto;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--panel-alt); border: 1px solid var(--border);
+            border-radius: 6px; color: var(--text);
+            cursor: pointer; padding: 0; font-size: 16px; line-height: 1; margin: 0;
+        }
+        .icon-btn:hover { border-color: var(--accent-owned); }
+        .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
+        .search-wrap { flex: 1 1 200px; min-width: 120px; max-width: 340px; margin: 0; }
         #info-btn {
-            order: 3; margin: 8px auto 0 auto; cursor: pointer;
-            width: 26px; height: 26px; padding: 0; background: none;
+            order: 3; flex: 0 0 auto; margin: 0; cursor: pointer;
+            width: 28px; height: 28px; padding: 0; background: none;
             border: 1px solid var(--border); border-radius: 50%;
             color: var(--text-dim); opacity: 0.75;
             display: flex; align-items: center; justify-content: center;
         }
         #info-btn:hover { opacity: 1; color: var(--accent-owned); border-color: var(--accent-owned); }
-        #cv-controls-row { order: 2; }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
 
-        /* Phones: sidebar becomes a compact bar across the TOP instead of a
-           floating card, so it blocks as little of the map as possible.
-           Laid out as a 2-row grid: title + info button on row 1,
-           the icon buttons + search box together on row 2. */
+        /* Phones: the same bar, wrapped onto two rows - title and info button
+           on top, the controls underneath - because there is no room for one
+           line. */
         @media (max-width: 700px) {
-            #collection-view { flex-direction: column; }
             #cv-sidebar {
-                position: static; top: auto; left: auto; max-height: none;
-                box-shadow: none; border-radius: 0; backdrop-filter: none;
-                background: var(--bg-solid);
-                width: 100%; height: auto;
-                border: none; border-bottom: 1px solid var(--border);
                 display: grid; grid-template-columns: 1fr auto;
                 grid-template-areas: "title version" "controls controls";
-                align-items: center; gap: 4px 10px;
-                padding: 8px 10px;
+                align-items: center; gap: 4px 10px; padding: 8px 10px;
             }
-            #cv-title { grid-area: title; font-size: 28px; font-weight: 700; margin: 0; text-align: left; }
+            #cv-title { grid-area: title; font-size: 28px; font-weight: 700; }
             #info-btn { grid-area: version; margin: 0 0 0 auto; }
-            #cv-controls-row {
-                grid-area: controls; display: flex; align-items: center; gap: 6px;
-            }
-            #icon-row { margin-bottom: 0; gap: 6px; align-items: center; }
-            /* Cancel the desktop "stretch to fill the row" sizing (flex:1 +
-               aspect-ratio) - here the icon row sits BESIDE the search box
-               instead of stacked above it, so buttons go back to a fixed
-               square size. That size (30px) is also given to the search
-               box explicitly below, so the two end up exactly the same
-               height and sit flush together instead of looking offset. */
-            .icon-btn { flex: 0 0 30px; aspect-ratio: auto; width: 30px; height: 30px; font-size: 14px; }
-            .search-wrap { margin-bottom: 0; flex: 1 1 140px; min-width: 100px; align-self: center; }
-            /* Height/line-height/appearance are all pinned explicitly - a
-               plain "height:30px" alone wasn't enough to line these up with
-               the buttons on every mobile browser (Android's default text-
-               input chrome can add its own intrinsic padding that isn't
-               there in a desktop test), so this removes that native styling
-               entirely instead of fighting it. */
+            #cv-controls-row { grid-area: controls; gap: 6px; }
+            .icon-btn { flex: 0 0 30px; width: 30px; height: 30px; font-size: 14px; }
+            .search-wrap { flex: 1 1 140px; min-width: 100px; max-width: none; }
+            /* Height/line-height/appearance are pinned explicitly - "height:30px"
+               alone was not enough to line these up with the buttons on every
+               mobile browser, because Android's default text-input chrome adds
+               its own intrinsic padding. This removes that styling rather than
+               fighting it. */
             #search-box, #search-ghost {
                 height: 30px; line-height: 28px; font-size: 12px; padding: 0 8px;
                 -webkit-appearance: none; appearance: none;
             }
             .legend-btn { font-size: 11px; padding: 6px 8px; margin-bottom: 0; width: auto; }
             .box { max-width: 92vw; padding: 24px 20px; }
-            /* No override needed here anymore - #list-view's plain base
-               padding (20px all around) already applies; the extra desktop
-               padding-left lives only in its own @media (min-width:701px)
-               rule above, so it can never leak into this range. */
         }
         .search-wrap { position: relative; margin-bottom: 16px; }
         #search-box, #search-ghost {
@@ -210,7 +199,7 @@
         }
         .icon-btn:hover { border-color: var(--accent-owned); }
         .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
-        #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
+        #cv-main { flex: 1 1 auto; position: relative; min-height: 0; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
         /* Leaflet handles its own pinch/drag gestures here, so the browser's
            native page gestures are suppressed on the map only - rather than
@@ -237,19 +226,8 @@
             display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             overflow-y: auto; padding: 20px; background: var(--bg-translucent); z-index: 400;
         }
-        /* The extra left padding (desktop only) and its mobile override used
-           to both be plain #list-view rules with equal specificity - which
-           one "wins" then just came down to source order, and they'd
-           silently swapped at some point, so mobile was picking up the
-           desktop padding instead of its own override. Scoping each to its
-           own media query removes the ambiguity for good - only one of
-           these can ever match a given viewport. */
-        @media (min-width: 701px) {
-            /* The floating sidebar card sits on top of this view (see
-               #cv-sidebar) and would otherwise cover the left edge of every
-               row, hiding country names. */
-            #list-view { padding-left: 270px; }
-        }
+        /* No left padding needed any more: the controls are a top bar, so
+           nothing overlaps the list. */
         #list-stats {
             text-align: center; font-size: 13px; color: var(--text-dim);
             padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--border);
@@ -334,6 +312,49 @@
         #cache-modal-stats { font-size: 13px; color: var(--text-dim); margin: 0 0 18px 0; line-height: 1.6; }
         #cache-modal-actions { display: flex; gap: 8px; }
         #cache-modal-actions .legend-btn { justify-content: center; margin-bottom: 0; }
+        #cache-modal { text-align: left; width: 310px; max-height: 86vh; overflow-y: auto; }
+        #cache-modal h3 { text-align: center; }
+        #info-collection, #info-app { margin: 0 0 12px 0; font-size: 13px; line-height: 1.5; }
+        #info-collection dt, #info-app dt {
+            font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--text-dim); margin-top: 10px;
+        }
+        #info-collection dt:first-child, #info-app dt:first-child { margin-top: 0; }
+        #info-collection dd, #info-app dd { margin: 1px 0 0 0; color: var(--text); }
+        .info-section {
+            font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+            color: var(--accent-owned); font-weight: normal;
+            margin: 20px 0 8px 0; padding-top: 14px; border-top: 1px solid var(--border);
+        }
+        .info-section-first { margin-top: 0; padding-top: 0; border-top: none; }
+        .info-buttons { display: flex; flex-direction: column; gap: 6px; }
+        .info-action { justify-content: center; gap: 8px; margin-bottom: 0; width: 100%; }
+        .info-danger { color: var(--accent-none); }
+        .info-danger:hover { border-color: var(--accent-none); }
+        #cache-modal-stats { text-align: left; margin: 0 0 12px 0; }
+        #info-errors:not(:empty) {
+            font-size: 11px; line-height: 1.45; color: var(--accent-none);
+            border: 1px solid var(--border); border-radius: 6px;
+            padding: 8px 10px; margin-bottom: 12px;
+            max-height: 130px; overflow-y: auto;
+        }
+        #info-errors .err-row { margin-bottom: 6px; word-break: break-word; }
+        #info-errors .err-row:last-child { margin-bottom: 0; }
+        #info-errors .err-stage { color: var(--text-dim); text-transform: uppercase; font-size: 9px; letter-spacing: 0.08em; }
+
+        /* A thumbnail that could not be produced, in place of the image. */
+        .thumb-error {
+            width: 100%; height: 130px; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; gap: 6px;
+            border: 1px dashed var(--border); border-radius: 6px;
+            background: rgba(161,61,43,0.06); color: var(--accent-none);
+        }
+        .thumb-error-mark {
+            width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid currentColor;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: bold; line-height: 1;
+        }
+        .thumb-error-text { font-size: 10px; color: var(--text-dim); }
         #cache-modal { text-align: left; width: 300px; }
         #cache-modal h3 { text-align: center; }
         #info-facts { margin: 0 0 16px 0; font-size: 13px; line-height: 1.5; }
@@ -373,6 +394,14 @@
             background: var(--panel-alt); color: var(--text);
             font-family: inherit; -webkit-appearance: none; appearance: none;
         }
+        .dialog-choices { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+        .dialog-choice {
+            flex-direction: column; align-items: stretch; gap: 2px;
+            text-align: left; margin-bottom: 0; padding: 9px 12px;
+        }
+        .dialog-choice:hover { border-color: var(--accent-owned); }
+        .dialog-choice-label { font-size: 13px; color: var(--text); }
+        .dialog-choice-hint { font-size: 11px; color: var(--text-dim); }
         .dialog-actions { display: flex; gap: 8px; }
         .dialog-actions .legend-btn { justify-content: center; margin-bottom: 0; }
         .dialog-actions .dialog-confirm {
@@ -474,13 +503,30 @@
         <div id="cache-modal-backdrop"></div>
         <div id="cache-modal" role="dialog" aria-modal="true" aria-labelledby="info-modal-title">
             <h3 id="info-modal-title">About</h3>
-            <dl id="info-facts"></dl>
-            <button id="export-btn" class="legend-btn info-action">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                <span>Share whole collection</span>
-            </button>
-            <h4 class="info-section">Thumbnail cache</h4>
+
+            <h4 class="info-section info-section-first">This collection</h4>
+            <dl id="info-collection"></dl>
+            <div class="info-buttons">
+                <button id="export-btn" class="legend-btn info-action">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                        <g transform="translate(3.21,-2.15) scale(0.664)" fill="currentColor">
+                            <path d="M22 6.5c-.7.4-1.5.6-2.3.7.8-.5 1.4-1.3 1.7-2.3-.8.5-1.6.8-2.5 1-1.6-1.7-4.3-1.5-5.6.4-.5.7-.7 1.6-.5 2.4-3-.1-5.6-1.5-7.4-3.7-.9 1.6-.4 3.7 1.2 4.7-.6 0-1.2-.2-1.7-.5 0 1.7 1.2 3.1 2.8 3.5-.5.1-1 .2-1.6.1.4 1.4 1.8 2.4 3.3 2.5-1.5 1.1-3.3 1.6-5.2 1.4 1.7 1 3.6 1.6 5.6 1.6 6.7 0 10.5-5.6 10.3-10.6.7-.5 1.3-1.2 1.8-1.9z"/>
+                        </g>
+                        <rect x="7" y="13" width="10" height="7" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                        <path d="M7 13.3 12 17 17 13.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span>Share collection</span>
+                </button>
+                <button id="delete-collection-btn" class="legend-btn info-action info-danger">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                    <span>Remove collection</span>
+                </button>
+            </div>
+
+            <h4 class="info-section">Application</h4>
+            <dl id="info-app"></dl>
             <p id="cache-modal-stats">Loading…</p>
+            <div id="info-errors"></div>
             <div id="cache-modal-actions">
                 <button id="cache-clear-btn" class="legend-btn">Clear cache</button>
                 <button id="cache-close-btn" class="legend-btn">Close</button>

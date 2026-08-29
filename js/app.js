@@ -6,7 +6,7 @@ import {
 } from './config.js';
 import { initAuth, promptSignIn, trySilentSignIn, clearToken, getAccessToken } from './auth.js';
 import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } from './drive.js';
-import { getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError, releaseModalObjectUrls } from './cache.js';
+import { getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError, releaseModalObjectUrls, thumbErrors } from './cache.js';
 import { state, resetCollectionState } from './state.js';
 import { COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount } from './countries.js';
 import { loadLayouts } from './layouts.js';
@@ -17,7 +17,7 @@ import {
     focusOnMatches, invalidateMapSize
 } from './map.js';
 import { buildCollectionExport, shareOrDownloadFile } from './export.js';
-import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showDialog } from './dialog.js';
+import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showChoiceDialog } from './dialog.js';
 
 const statusEl = document.getElementById('status');
 const contentEl = document.getElementById('content');
@@ -201,7 +201,10 @@ async function openCollection(col) {
     p.textContent = `Opening "${col.name}"...`;
     contentEl.appendChild(p);
     setStatus('Reading folders and images...');
-    getDriveThumbIndex(); // warm up, don't await
+    // Warmed up but never awaited, and its rejection is swallowed here: this
+    // promise is memoised and shared by every thumbnail, so an unhandled
+    // rejection on it would surface later on each of them.
+    getDriveThumbIndex().catch(err => console.warn('Thumbnail index warm-up failed:', err));
 
     try {
         // Folder metadata is fetched alongside the contents (not awaited
@@ -378,46 +381,88 @@ function initControls() {
 
 }
 
-// ---------- whole-collection export ----------
+// ---------- sharing the whole collection ----------
+const TEN_MB = 10 * 1024 * 1024;
+
 async function exportWholeCollection() {
     if (!currentCollection) return;
-    closeCacheModal(); // it is launched from the info panel
+    closeCacheModal(); // launched from the info panel
+
     const countryCount = Object.keys(state.collectionData).length;
     if (countryCount === 0) {
-        await alertDialog('There is nothing to export yet.');
+        await alertDialog('There is nothing to share yet.');
         return;
     }
 
-    const choice = await showDialog({
-        title: 'Export whole collection',
-        message: `Builds one HTML file containing every photo in "${currentCollection.name}" ` +
-                 `(${countryCount} countries), with a table of contents. Larger photos make a ` +
-                 `much bigger file - a big collection can reach hundreds of megabytes at full size.`,
-        confirmLabel: 'Smaller file',
-        cancelLabel: 'Cancel'
+    const choice = await showChoiceDialog({
+        title: 'Share collection',
+        message: `One file containing every photo in "${currentCollection.name}" ` +
+                 `(${uniqueImageCount(state.cvCountryMap)} items, ${countryCount} countries), ` +
+                 `with a table of contents. Bigger photos mean a much bigger file.`,
+        options: [
+            { value: 'full',   label: 'Full size',        hint: 'Original photos - can be very large' },
+            { value: 'tenth',  label: 'A tenth of size',  hint: 'Each side divided by 10' },
+            { value: 'budget', label: 'Fit within 10 MB', hint: 'Shrunk automatically to fit' },
+        ]
     });
-    if (choice !== true) return;
+    if (!choice) return;
 
-    const progress = showProgressDialog('Exporting', 'Collecting photos…');
+    const sizing = choice === 'full'  ? { mode: 'full' }
+                 : choice === 'tenth' ? { mode: 'fraction', factor: 10 }
+                 : { mode: 'budget', bytes: TEN_MB };
+
+    const progress = showProgressDialog('Preparing', 'Collecting photos…');
     try {
-        const result = await buildCollectionExport(currentCollection.name, 6, (done, total) => {
-            progress.setMessage(`Preparing photo ${done} of ${total}…`);
+        const result = await buildCollectionExport(currentCollection.name, sizing, (done, total, pass) => {
+            progress.setMessage(pass > 1
+                ? `Still too big - shrinking (photo ${done} of ${total})…`
+                : `Preparing photo ${done} of ${total}…`);
         });
-        progress.setMessage('Building the file…');
         progress.close();
+        const mb = (result.bytes / (1024 * 1024)).toFixed(1);
+        if (sizing.mode === 'budget' && result.bytes > sizing.bytes) {
+            const go = await confirmDialog(
+                `The smallest version still comes to ${mb} MB. Share it anyway?`,
+                { title: 'Larger than 10 MB', confirmLabel: 'Share' });
+            if (!go) return;
+        }
         await shareOrDownloadFile(result.blob, result.filename);
     } catch (err) {
         progress.close();
-        console.error('Collection export failed:', err);
-        await alertDialog('Could not build that file: ' + (err.message || err), 'Export failed');
+        console.error('Collection share failed:', err);
+        await alertDialog('Could not build that file: ' + (err.message || err), 'Share failed');
+    }
+}
+
+// Removes the OPEN collection from the app, then returns to the list. The same
+// action used to live only on the collections screen; it is here too so
+// everything about the open collection is in one place.
+async function removeOpenCollection() {
+    if (!currentCollection) return;
+    closeCacheModal();
+    const col = currentCollection;
+    const ok = await confirmDialog(
+        `Remove "${col.name}" from your collections list? This only removes it from ` +
+        `this app - the folder and all photos stay exactly as they are in your Google Drive.`,
+        { title: 'Remove collection', confirmLabel: 'Remove' }
+    );
+    if (!ok) return;
+
+    const updated = collectionsState.collections.filter(c => c.id !== col.id);
+    try {
+        const newFileId = await saveCollections(collectionsState.fileId, updated);
+        collectionsState = { fileId: newFileId, collections: updated };
+        goBackToCollections(false);
+    } catch (err) {
+        console.error('Could not remove the collection:', err);
+        await alertDialog('Could not remove that collection: ' + (err.message || err), 'Remove failed');
     }
 }
 
 // ---------- info panel ----------
-// Opened by the "!" button in the sidebar, which replaced the version-number
-// caption. Everything about the open collection lives here: version, which
-// collection it is, when its Drive folder was created, the whole-collection
-// share, and the thumbnail-cache stats that used to be all this panel showed.
+// Split in two on purpose: what belongs to THIS COLLECTION (what it is, when it
+// was made, sharing it, removing it) and what belongs to THE APPLICATION
+// (version, the thumbnail cache, recent errors).
 function fact(dl, label, value) {
     const dt = document.createElement('dt');
     dt.textContent = label;
@@ -426,28 +471,59 @@ function fact(dl, label, value) {
     dl.append(dt, dd);
 }
 
+// Always en-GB, never the device locale: the interface is in English, and on a
+// Hebrew phone toLocaleDateString() with no locale produced a Hebrew month in
+// the middle of an otherwise English panel.
+function formatDate(iso) {
+    if (!iso) return 'unknown';
+    const d = new Date(iso);
+    if (isNaN(d)) return 'unknown';
+    return d.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function renderThumbErrors() {
+    const box = document.getElementById('info-errors');
+    box.innerHTML = '';
+    if (!thumbErrors.length) return;
+    thumbErrors.slice(0, 6).forEach(e => {
+        const row = document.createElement('div');
+        row.className = 'err-row';
+        const stage = document.createElement('span');
+        stage.className = 'err-stage';
+        stage.textContent = e.stage + ' — ';
+        row.appendChild(stage);
+        row.appendChild(document.createTextNode(e.message));
+        box.appendChild(row);
+    });
+}
+
 async function openInfoModal() {
     document.getElementById('cache-modal-backdrop').style.display = 'block';
     document.getElementById('cache-modal').style.display = 'block';
 
-    const facts = document.getElementById('info-facts');
-    facts.innerHTML = '';
-    fact(facts, 'Version', APP_VERSION);
-    if (currentCollection) {
-        fact(facts, 'Collection', currentCollection.name);
-        const created = currentFolderInfo && currentFolderInfo.createdTime;
-        fact(facts, 'Created', created
-            ? new Date(created).toLocaleDateString(undefined,
-                { year: 'numeric', month: 'long', day: 'numeric' })
-            : 'unknown');
+    const col = document.getElementById('info-collection');
+    col.innerHTML = '';
+    const hasCollection = !!currentCollection;
+    if (hasCollection) {
+        fact(col, 'Name', currentCollection.name);
+        fact(col, 'Created', formatDate(currentFolderInfo && currentFolderInfo.createdTime));
         const countryCount = Object.keys(state.collectionData).length;
-        fact(facts, 'Contents', `${uniqueImageCount(state.cvCountryMap)} items in ${countryCount} ` +
+        fact(col, 'Contents', `${uniqueImageCount(state.cvCountryMap)} items in ${countryCount} ` +
             `countr${countryCount === 1 ? 'y' : 'ies'}`);
+    } else {
+        fact(col, 'Name', 'No collection open');
     }
-    document.getElementById('export-btn').style.display = currentCollection ? 'flex' : 'none';
+    document.getElementById('export-btn').style.display = hasCollection ? 'flex' : 'none';
+    document.getElementById('delete-collection-btn').style.display = hasCollection ? 'flex' : 'none';
+
+    const appDl = document.getElementById('info-app');
+    appDl.innerHTML = '';
+    fact(appDl, 'Version', APP_VERSION);
+
+    renderThumbErrors();
 
     const statsEl = document.getElementById('cache-modal-stats');
-    statsEl.textContent = 'Loading…';
+    statsEl.textContent = 'Loading cache info…';
     try {
         const index = await getDriveThumbIndex();
         const count = index.size;
@@ -456,7 +532,7 @@ async function openInfoModal() {
         statsEl.textContent = `${count} thumbnail${count === 1 ? '' : 's'} cached in Drive — ≈ ${mb} MB`;
         if (lastThumbUploadError) {
             const warn = document.createElement('div');
-            warn.style.cssText = 'color:var(--accent-none);font-size:11px;margin-top:10px;';
+            warn.style.cssText = 'color:var(--accent-none);font-size:11px;margin-top:8px;';
             warn.textContent = 'Last upload error: ' + lastThumbUploadError;
             statsEl.appendChild(warn);
         }
@@ -474,6 +550,7 @@ document.getElementById('info-btn').onclick = openInfoModal;
 document.getElementById('cache-modal-backdrop').onclick = closeCacheModal;
 document.getElementById('cache-close-btn').onclick = closeCacheModal;
 document.getElementById('export-btn').onclick = exportWholeCollection;
+document.getElementById('delete-collection-btn').onclick = removeOpenCollection;
 document.getElementById('cache-clear-btn').onclick = async () => {
     const ok = await confirmDialog(
         "Delete all cached thumbnails from Drive? They'll be regenerated automatically the next time each photo is viewed.",

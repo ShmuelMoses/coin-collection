@@ -50,14 +50,17 @@ export function orderedGroupsFor(code) {
 }
 
 // Fetches, shrinks and base64-encodes images in parallel, reporting progress.
-// `factor` 4 means quarter width and height.
+// `factor` 4 means quarter width and height; 1 means original size. It may be
+// fractional, since the budget mode solves for it numerically.
 async function encodeImages(images, factor, onProgress) {
     const dataUrlById = {};
     let done = 0;
     await Promise.all(images.map(async img => {
         try {
             const fullBlob = await fetchFullImageBlob(img.id);
-            const smallBlob = await resizeImageBlobByFactor(fullBlob, factor);
+            const smallBlob = factor <= 1
+                ? fullBlob // original resolution: no re-encode at all
+                : await resizeImageBlobByFactor(fullBlob, factor);
             dataUrlById[img.id] = await blobToBase64(smallBlob);
         } catch (err) {
             console.warn('Skipping image that could not be exported:', img.id, err);
@@ -112,7 +115,19 @@ export async function buildCountryExport(code, selectedIds, onProgress) {
 // One document with a table of contents and every owned country in order. The
 // per-country export shrinks by 4; this one shrinks harder by default because
 // a large collection would otherwise run to hundreds of megabytes.
-export async function buildCollectionExport(collectionName, factor, onProgress) {
+// `sizing` is one of:
+//   { mode: 'full' }              - original resolution
+//   { mode: 'fraction', factor }  - each side divided by `factor`
+//   { mode: 'budget', bytes }     - shrink until the file fits in `bytes`
+//
+// The budget mode measures the encoded result and, if it is over, re-encodes at
+// a smaller scale. Because area scales with the square of the linear factor,
+// sqrt(actual / budget) is the right correction, and it converges in one or two
+// passes. Re-encoding is cheap: the originals are already in the local cache
+// after the first pass, so nothing is downloaded twice.
+const MAX_BUDGET_PASSES = 3;
+
+export async function buildCollectionExport(collectionName, sizing, onProgress) {
     const codes = Object.keys(state.collectionData)
         .sort((a, b) => (COUNTRY_NAMES[a] || a).localeCompare(COUNTRY_NAMES[b] || b));
 
@@ -129,31 +144,51 @@ export async function buildCollectionExport(collectionName, factor, onProgress) 
         allImages.push(img);
     })));
 
-    const dataUrlById = await encodeImages(allImages, factor, onProgress);
+    function assemble(dataUrlById) {
+        const toc = perCountry.map(c => {
+            const name = COUNTRY_NAMES[c.code] || c.code;
+            const n = c.groups.reduce((s, g) => s + g.images.length, 0);
+            return `<div><a href="#c-${escapeHtml(c.code)}">${escapeHtml(name)}</a> (${n})</div>`;
+        }).join('');
 
-    const toc = perCountry.map(c => {
-        const name = COUNTRY_NAMES[c.code] || c.code;
-        const n = c.groups.reduce((s, g) => s + g.images.length, 0);
-        return `<div><a href="#c-${escapeHtml(c.code)}">${escapeHtml(name)}</a> (${n})</div>`;
-    }).join('');
+        let body = `<h1>${escapeHtml(collectionName)}</h1>`;
+        body += `<p class="meta">${allImages.length} item${allImages.length === 1 ? '' : 's'} from ` +
+                `${perCountry.length} countr${perCountry.length === 1 ? 'y' : 'ies'} \u2014 ` +
+                `exported ${new Date().toLocaleDateString('en-GB')}</p>`;
+        body += `<div class="toc">${toc}</div>`;
+        perCountry.forEach(c => {
+            const name = COUNTRY_NAMES[c.code] || c.code;
+            body += `<h2 id="c-${escapeHtml(c.code)}">${escapeHtml(name)}</h2>`;
+            body += groupsToHtml(c.groups, dataUrlById, 'h3');
+        });
+        return wrapDocument(collectionName, body);
+    }
 
-    let body = `<h1>${escapeHtml(collectionName)}</h1>`;
-    body += `<p class="meta">${allImages.length} item${allImages.length === 1 ? '' : 's'} from ` +
-            `${perCountry.length} countr${perCountry.length === 1 ? 'y' : 'ies'} — ` +
-            `exported ${new Date().toLocaleDateString()}</p>`;
-    body += `<div class="toc">${toc}</div>`;
+    let factor = sizing.mode === 'full' ? 1
+               : sizing.mode === 'fraction' ? sizing.factor
+               : 6; // starting guess for a budget
+    let html, blob;
 
-    perCountry.forEach(c => {
-        const name = COUNTRY_NAMES[c.code] || c.code;
-        body += `<h2 id="c-${escapeHtml(c.code)}">${escapeHtml(name)}</h2>`;
-        body += groupsToHtml(c.groups, dataUrlById, 'h3');
-    });
+    for (let pass = 1; ; pass++) {
+        const dataUrlById = await encodeImages(allImages, factor, (done, total) =>
+            onProgress && onProgress(done, total, pass));
+        html = assemble(dataUrlById);
+        blob = new Blob([html], { type: 'text/html' });
+
+        if (sizing.mode !== 'budget' || blob.size <= sizing.bytes || pass >= MAX_BUDGET_PASSES) break;
+        // Over budget: shrink each side by sqrt(over-shoot), with a little
+        // headroom so the next pass is not borderline.
+        const overshoot = blob.size / sizing.bytes;
+        factor = Math.min(40, factor * Math.sqrt(overshoot) * 1.08);
+    }
 
     return {
-        blob: new Blob([wrapDocument(collectionName, body)], { type: 'text/html' }),
+        blob,
         filename: `${collectionName.replace(/\s+/g, '_')}_collection.html`,
         imageCount: allImages.length,
-        countryCount: perCountry.length
+        countryCount: perCountry.length,
+        bytes: blob.size,
+        factor
     };
 }
 

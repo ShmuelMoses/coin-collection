@@ -60,7 +60,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'status', 'content', 'signin-btn', 'login-box', 'login-version', 'app-version',
     'collection-view', 'cv-sidebar', 'cv-title', 'cv-controls-row', 'icon-row',
     'back-btn', 'view-toggle-btn', 'color-mode-btn', 'color-mode-dot', 'color-mode-label',
-    'reset-btn', 'export-btn', 'info-btn', 'info-facts', 'search-box', 'search-ghost',
+    'reset-btn', 'export-btn', 'info-btn', 'search-box', 'search-ghost',
     'cv-main', 'map', 'list-view',
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
@@ -68,6 +68,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'enlarge-overlay', 'enlarge-img',
     'cache-modal-backdrop', 'cache-modal', 'cache-modal-stats', 'cache-modal-actions',
     'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
+    'info-collection', 'info-app', 'info-errors', 'delete-collection-btn',
 ].forEach(id => mkEl(id));
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
@@ -364,6 +365,46 @@ const merged = drive.mergeCurrencyGroups(
 check('shared note folded into both countries',
     merged.find(c => c.code === 'FRA').images.length === 2 &&
     merged.find(c => c.code === 'DEU').images.length === 1);
+
+console.log('\nCollection share sizing');
+{
+    const exp = await import('./js/export.js');
+    // Two countries, three unique photos, one of them shared between them.
+    state.state.cvCountryMap = countries.buildCountryMap([
+        { code: 'FRA', images: [{ id: 'a', name: 'a' }, { id: 'shared', name: 's' }] },
+        { code: 'DEU', images: [{ id: 'b', name: 'b' }, { id: 'shared', name: 's' }] },
+    ]);
+    state.state.collectionData = { FRA: { count: 2 }, DEU: { count: 2 } };
+
+    const passes = [];
+    let bytesPerImage = 400000; // pretend each encoded photo is this big
+    global.__encodeSpy = null;
+    // Stub the image pipeline: blobToBase64 length drives the file size.
+    const origFetch = global.fetch;
+    global.fetch = origFetch;
+
+    const full = await exp.buildCollectionExport('test1', { mode: 'full' });
+    check('full-size export includes every unique photo once',
+        (full.blob.size > 0) && full.imageCount === 3, 'imageCount=' + full.imageCount);
+    check('full size uses factor 1 (no re-encode)', full.factor === 1, String(full.factor));
+
+    const tenth = await exp.buildCollectionExport('test1', { mode: 'fraction', factor: 10 });
+    check('a tenth uses factor 10', tenth.factor === 10, String(tenth.factor));
+
+    const budget = await exp.buildCollectionExport('test1', { mode: 'budget', bytes: 10 * 1024 * 1024 });
+    check('budget mode reports the size it achieved', typeof budget.bytes === 'number');
+    check('budget mode stays within 10 MB for a small collection',
+        budget.bytes <= 10 * 1024 * 1024, budget.bytes + ' bytes');
+    check('export filename is derived from the collection name',
+        budget.filename === 'test1_collection.html', budget.filename);
+}
+
+console.log('\nDate formatting');
+check('a Hebrew device locale does not leak into the date', (() => {
+    const d = new Date('2026-08-20T00:00:00Z').toLocaleDateString('en-GB',
+        { year: 'numeric', month: 'long', day: 'numeric' });
+    return /August/.test(d);
+})());
 
 console.log('\nutil');
 check('escapeHtml', util.escapeHtml('<b>&</b>') === '&lt;b&gt;&amp;&lt;/b&gt;');

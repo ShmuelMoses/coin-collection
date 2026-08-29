@@ -144,6 +144,84 @@ export async function promptDialog(message, defaultValue, opts) {
     return res === null ? null : String(res);
 }
 
+// A dialog offering several mutually exclusive choices, each on its own row
+// with a short explanation. Resolves to the chosen option's `value`, or null if
+// dismissed. Used for "share at which size" - three buttons say what the
+// options actually are far better than one button plus a paragraph.
+export function showChoiceDialog(options) {
+    const opts = options || {};
+    const backdrop = ensureBackdrop();
+    backdrop.innerHTML = '';
+
+    const box = document.createElement('div');
+    box.className = 'dialog-box';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+
+    if (opts.title) {
+        const h = document.createElement('h3');
+        h.textContent = opts.title;
+        box.appendChild(h);
+    }
+    if (opts.message) {
+        const p = document.createElement('p');
+        p.className = 'dialog-message';
+        p.textContent = opts.message;
+        box.appendChild(p);
+    }
+
+    let settle;
+    const done = value => {
+        if (!settle) return;
+        const fn = settle;
+        settle = null;
+        closeActive = null;
+        document.removeEventListener('keydown', onKeyDown, true);
+        backdrop.classList.remove('open');
+        backdrop.innerHTML = '';
+        fn(value);
+    };
+
+    const list = document.createElement('div');
+    list.className = 'dialog-choices';
+    (opts.options || []).forEach(o => {
+        const b = document.createElement('button');
+        b.className = 'legend-btn dialog-choice';
+        const label = document.createElement('span');
+        label.className = 'dialog-choice-label';
+        label.textContent = o.label;
+        b.appendChild(label);
+        if (o.hint) {
+            const hint = document.createElement('span');
+            hint.className = 'dialog-choice-hint';
+            hint.textContent = o.hint;
+            b.appendChild(hint);
+        }
+        b.onclick = () => done(o.value);
+        list.appendChild(b);
+    });
+    box.appendChild(list);
+
+    const actions = document.createElement('div');
+    actions.className = 'dialog-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'legend-btn';
+    cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+    cancelBtn.onclick = () => done(null);
+    actions.appendChild(cancelBtn);
+    box.appendChild(actions);
+
+    backdrop.appendChild(box);
+    backdrop.classList.add('open');
+
+    return new Promise(resolve => {
+        settle = resolve;
+        closeActive = done;
+        document.addEventListener('keydown', onKeyDown, true);
+        requestAnimationFrame(() => cancelBtn.focus());
+    });
+}
+
 // A dialog that stays open while something runs, with a live status line.
 // Returns { setMessage, close }.
 export function showProgressDialog(title, message) {

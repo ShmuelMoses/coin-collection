@@ -27,6 +27,10 @@ export async function loadLayouts() {
 }
 
 export function getCountryLayout(code) {
+    // In normal use loadLayouts() has already run (showCollectionView awaits
+    // it), but this must not be the thing that throws if it hasn't: an empty
+    // layout is a perfectly valid answer and callers can carry on.
+    if (!layoutsCache) layoutsCache = { fileId: null, data: {} };
     const data = layoutsCache.data;
     if (!data[state.currentCollectionId]) data[state.currentCollectionId] = {};
     const perCollection = data[state.currentCollectionId];
