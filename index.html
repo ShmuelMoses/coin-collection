@@ -2,7 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- maximum-scale/user-scalable are deliberately NOT set: blocking pinch
+         zoom document-wide also stops you magnifying a small banknote, and the
+         map does its own pinch handling anyway (see #map's touch-action). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Collections</title>
     <!-- App icon: the browser-tab favicon (Windows/desktop) and the Android
          "Add to Home screen" shortcut icon both come from these two files
@@ -15,8 +18,16 @@
     <meta name="theme-color" content="#5a3d22">
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="https://apis.google.com/js/api.js"></script>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- Leaflet 1.9.4, served from this repo rather than a CDN. Loading it
+         from unpkg meant a CDN outage didn't degrade the app, it broke it
+         outright: L would be undefined and nothing rendered at all. These two
+         files sit next to index.html and must be committed with it.
+         (leaflet.css references images/layers.png and images/marker-icon.png,
+         which are NOT included - this app draws only polygons and tooltips,
+         uses no default markers, and hides the layers/zoom controls, so no
+         element ever matches those rules and the browser never requests them.) -->
+    <link rel="stylesheet" href="leaflet.css" />
+    <script src="leaflet.js"></script>
     <style>
         * { box-sizing: border-box; }
         /* Antique/parchment palette - the app's only theme now (the
@@ -33,6 +44,12 @@
             --border: rgba(59,42,26,0.25);
             --map-bg: #e3d5ae;
             --label-halo: rgba(236,226,200,0.95);
+            /* Map-layer colors. Leaflet needs these as JS values, and they are
+               read from here at startup (see cssVar) rather than duplicated in
+               the script - this block is the only place a color is defined. */
+            --map-border: rgba(59,42,26,0.45);
+            --frame: #5a3d22;
+            --frame-light: #e8dcbb;
         }
         body {
             font-family: Georgia, 'Times New Roman', serif;
@@ -104,7 +121,16 @@
             display: flex; flex-direction: column;
         }
         #cv-title { order: 1; font-size: 24px; margin: 0 0 16px 0; color: var(--accent-owned); text-align: center; }
-        #app-version { order: 3; text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 8px; cursor: pointer; }
+        /* This is a real <button> (it opens the cache panel, so it must be
+           focusable and announced as a control) - the width/padding/font
+           resets undo the global `button` rule so it still looks like the
+           plain caption it was as a <div>. */
+        #app-version {
+            order: 3; text-align: center; font-size: 10px; color: var(--text-dim);
+            opacity: 0.6; margin-top: 8px; cursor: pointer;
+            width: auto; padding: 0; background: none; border: none;
+            font-family: inherit; display: block;
+        }
         #app-version:hover { opacity: 1; }
         #cv-controls-row { order: 2; }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
@@ -186,7 +212,13 @@
         .icon-btn.active { border-color: var(--accent-owned); background: rgba(0,0,0,0.08); }
         #cv-main { flex: 1; position: relative; transition: filter 0.2s; }
         #cv-main.dimmed { filter: brightness(0.55); }
-        #map { height: 100%; width: 100%; background: var(--map-bg); }
+        /* Leaflet handles its own pinch/drag gestures here, so the browser's
+           native page gestures are suppressed on the map only - rather than
+           document-wide via the viewport meta, which used to also block
+           pinch-zooming a photo. */
+        #map { height: 100%; width: 100%; background: var(--map-bg); touch-action: none; }
+        /* Keyboard focus was previously invisible everywhere. */
+        :focus-visible { outline: 2px solid var(--accent-owned); outline-offset: 2px; }
         /* Decorative antique-map compass rose is added as a real Leaflet
            SVG overlay layer anchored to lat/lng in initMap() (not a
            fixed-pixel marker/divIcon), specifically so it scales with the
@@ -256,8 +288,24 @@
         #share-icon-btn:hover, #share-confirm-icon-btn:hover,
         #organize-icon-btn:hover, #organize-confirm-icon-btn:hover { opacity: 0.75; }
         #modal-images { display: block; }
+        /* Thumbnail grid: the column count comes from the space available, not
+           from the number of photos. It used to be min(5, ceil(sqrt(n))), which
+           capped a 40-note country at 5 columns on any screen and left most of a
+           desktop window empty. auto-fill also removes the need for a mobile
+           media query - it collapses to 1-2 columns on its own. */
+        /* --cols is set per group in renderImageGroup (photo count, capped at
+           6) so the modal still hugs its content for a country with 2 notes,
+           while auto-fill inside that width collapses the columns further on a
+           narrow phone. #modal is width:fit-content, so the grid needs a
+           definite width here - 1fr tracks alone would resolve against an
+           indefinite container and put everything on one row. */
+        .thumb-grid {
+            display: grid; gap: 10px; margin: 0 auto;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            width: min(86vw, calc(var(--cols, 4) * 140px));
+        }
         #modal-images img {
-            width: 130px; height: 130px; object-fit: contain; background: rgba(255,255,255,0.06);
+            width: 100%; height: 130px; object-fit: contain; background: rgba(255,255,255,0.06);
             border-radius: 6px; border: 1px solid var(--border); cursor: pointer; padding: 4px;
             display: block; transition: opacity 0.15s ease;
         }
@@ -296,17 +344,17 @@
             <button id="signin-btn" class="primary-btn" disabled>Loading...</button>
         </div>
         <div id="status"></div>
-        <div class="app-version">2.05</div>
+        <div class="app-version" id="login-version"></div>
     </div>
 
     <!-- ===== Full collection view (map / list / search / modal) ===== -->
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <div id="app-version" title="Thumbnail cache info">2.05</div>
+            <button id="app-version" title="Thumbnail cache info" aria-label="Thumbnail cache info"></button>
             <div id="cv-controls-row">
                 <div id="icon-row">
-                    <button id="back-btn" class="icon-btn" title="Back to My Collections">
+                    <button id="back-btn" class="icon-btn" title="Back to My Collections" aria-label="Back to My Collections">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <g transform="scale(-1,1) translate(-24,0)">
                                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
@@ -315,12 +363,12 @@
                             </g>
                         </svg>
                     </button>
-                    <button id="view-toggle-btn" class="icon-btn" title="Switch to List view"></button>
-                    <button id="color-mode-btn" class="icon-btn" title="Coloring: Have items + None yet">
+                    <button id="view-toggle-btn" class="icon-btn" title="Switch to List view" aria-label="Switch to List view"></button>
+                    <button id="color-mode-btn" class="icon-btn" title="Coloring: Have items + None yet" aria-label="Coloring: Have items + None yet">
                         <span class="legend-dot" id="color-mode-dot" style="background:linear-gradient(90deg, var(--accent-owned), var(--accent-none));"></span>
                         <span id="color-mode-label" style="display:none;"></span>
                     </button>
-                    <button id="reset-btn" class="icon-btn" title="Reset view">
+                    <button id="reset-btn" class="icon-btn" title="Reset view" aria-label="Reset view">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
                     </button>
                 </div>
@@ -338,22 +386,22 @@
         <div id="modal">
             <div id="modal-header">
                 <div class="modal-header-side modal-header-left">
-                    <button id="organize-icon-btn" title="Organize into categories">
+                    <button id="organize-icon-btn" title="Organize into categories" aria-label="Organize into categories">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                     </button>
-                    <button id="organize-confirm-icon-btn" title="Save changes" style="display:none;">
+                    <button id="organize-confirm-icon-btn" title="Save changes" aria-label="Save changes" style="display:none;">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
                     </button>
-                    <button id="organize-cancel-icon-btn" title="Discard changes" style="display:none;">
+                    <button id="organize-cancel-icon-btn" title="Discard changes" aria-label="Discard changes" style="display:none;">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
                     </button>
                 </div>
                 <h2 id="modal-title"></h2>
                 <div class="modal-header-side modal-header-right">
-                    <button id="share-cancel-icon-btn" title="Cancel" style="display:none;">
+                    <button id="share-cancel-icon-btn" title="Cancel" aria-label="Cancel sharing" style="display:none;">
                         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg>
                     </button>
-                    <button id="share-icon-btn" title="Share this country">
+                    <button id="share-icon-btn" title="Share this country" aria-label="Share this country">
                         <svg viewBox="0 0 24 24" width="24" height="24">
                             <g transform="translate(3.21,-2.15) scale(0.664)" fill="currentColor">
                                 <path d="M22 6.5c-.7.4-1.5.6-2.3.7.8-.5 1.4-1.3 1.7-2.3-.8.5-1.6.8-2.5 1-1.6-1.7-4.3-1.5-5.6.4-.5.7-.7 1.6-.5 2.4-3-.1-5.6-1.5-7.4-3.7-.9 1.6-.4 3.7 1.2 4.7-.6 0-1.2-.2-1.7-.5 0 1.7 1.2 3.1 2.8 3.5-.5.1-1 .2-1.6.1.4 1.4 1.8 2.4 3.3 2.5-1.5 1.1-3.3 1.6-5.2 1.4 1.7 1 3.6 1.6 5.6 1.6 6.7 0 10.5-5.6 10.3-10.6.7-.5 1.3-1.2 1.8-1.9z"/>
@@ -362,7 +410,7 @@
                             <path d="M7 13.3 12 17 17 13.3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
                         </svg>
                     </button>
-                    <button id="share-confirm-icon-btn" title="Share selected" style="display:none;">
+                    <button id="share-confirm-icon-btn" title="Share selected" aria-label="Share selected photos" style="display:none;">
                         <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>
                     </button>
                 </div>
@@ -395,6 +443,23 @@
 
         const SCOPES = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.appdata';
         const COLLECTIONS_FILENAME = 'collections.json';
+
+        // Single source of truth for the version - it used to be typed into
+        // two separate elements by hand, which meant a release could easily
+        // ship with the login screen and the sidebar disagreeing.
+        const APP_VERSION = '2.07';
+        document.getElementById('login-version').textContent = APP_VERSION;
+        document.getElementById('app-version').textContent = APP_VERSION;
+
+        // Escapes text that gets interpolated into an HTML string rather than
+        // set via textContent - notably the shared-country export, whose
+        // headings are category names you type yourself. An unescaped "&" or
+        // "<" in a category name used to corrupt the exported file.
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, ch => (
+                { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+            ));
+        }
 
         let tokenClient;
         let accessToken = null;
@@ -437,12 +502,43 @@
         }
         window.onload = loadGapiClient;
 
-        async function handleTokenResponse(response) {
-            if (!response.access_token) {
-                return; // silent attempt found no existing session - just wait for the button
+        // ---------- Access-token lifecycle ----------
+        // Google access tokens are valid for about an hour. Previously the
+        // token was captured once at sign-in and then used forever, so leaving
+        // the app open (a phone in a pocket, a desktop tab overnight) meant
+        // every Drive call started failing with a raw 401 and no way back
+        // except a manual reload. Now the expiry is tracked, refreshed
+        // pre-emptively, and any 401 that still slips through triggers one
+        // silent re-auth and a retry.
+        const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // refresh this long before expiry
+        const TOKEN_REFRESH_TIMEOUT_MS = 20 * 1000;    // give up waiting on a silent refresh
+        let tokenExpiresAt = 0;
+        let pendingTokenResolve = null; // set only while a refresh is in flight
+        let refreshInFlight = null;
+
+        // The token client has ONE callback, used both for the initial sign-in
+        // and for every later silent refresh. It must not restart the app UI on
+        // a refresh - that would throw the user back to the collections list
+        // mid-browse - so a refresh is detected by there being a waiter.
+        function handleTokenResponse(response) {
+            const token = response && response.access_token;
+            if (token) {
+                accessToken = token;
+                // expires_in is seconds; default to the documented 1 hour.
+                tokenExpiresAt = Date.now() + (Number(response.expires_in) || 3600) * 1000;
+                gapi.client.setToken({ access_token: accessToken });
             }
-            accessToken = response.access_token;
-            gapi.client.setToken({ access_token: accessToken });
+            if (pendingTokenResolve) {
+                const resolve = pendingTokenResolve;
+                pendingTokenResolve = null;
+                resolve(!!token);
+                return; // a refresh, not a fresh sign-in - leave the UI alone
+            }
+            if (!token) return; // startup's silent attempt found no session; wait for the button
+            startSignedInSession();
+        }
+
+        async function startSignedInSession() {
             setStatus('Loading your collections...');
             try {
                 await showCollectionsScreen();
@@ -450,6 +546,111 @@
                 console.error(err);
                 setStatus('Error: ' + (err.message || JSON.stringify(err)));
             }
+        }
+
+        // Requests a new token without showing any UI. Resolves true if we got
+        // one. Concurrent callers share a single in-flight request.
+        function refreshAccessToken() {
+            if (refreshInFlight) return refreshInFlight;
+            refreshInFlight = new Promise(resolve => {
+                let settled = false;
+                const done = ok => {
+                    if (settled) return;
+                    settled = true;
+                    if (pendingTokenResolve === finish) pendingTokenResolve = null;
+                    resolve(ok);
+                };
+                const finish = done;
+                pendingTokenResolve = finish;
+                // If Google never calls back (offline, popup blocked), don't
+                // hang every pending Drive call forever.
+                setTimeout(() => done(false), TOKEN_REFRESH_TIMEOUT_MS);
+                try {
+                    tokenClient.requestAccessToken({ prompt: '' });
+                } catch (err) {
+                    console.warn('Silent token refresh could not start:', err);
+                    done(false);
+                }
+            });
+            refreshInFlight.then(() => { refreshInFlight = null; },
+                                 () => { refreshInFlight = null; });
+            return refreshInFlight;
+        }
+
+        function tokenLooksExpired() {
+            return !accessToken || Date.now() > (tokenExpiresAt - TOKEN_REFRESH_MARGIN_MS);
+        }
+
+        function isAuthError(err) {
+            if (!err) return false;
+            // gapi rejects with the response object; our fetch helpers attach
+            // .status themselves. 403 is deliberately NOT treated as an auth
+            // error - it's normally quota or permission, and retrying won't help.
+            const status = err.status ||
+                (err.result && err.result.error && err.result.error.code);
+            return status === 401;
+        }
+
+        // Reached only when a silent refresh genuinely fails (revoked access,
+        // offline, or a consent screen still in "Testing" mode, where Google
+        // expires the grant after 7 days no matter what the app does). Returns
+        // to the sign-in screen with a real explanation instead of leaving a
+        // dead collection view throwing 401s at every interaction.
+        let signedOutShown = false;
+        function reportSignedOut() {
+            accessToken = null;
+            tokenExpiresAt = 0;
+            if (signedOutShown) return;
+            signedOutShown = true;
+
+            if (leafletMap) { leafletMap.remove(); leafletMap = null; }
+            releaseModalObjectUrls();
+            modal.style.display = 'none';
+            modalBackdrop.style.display = 'none';
+            document.getElementById('collection-view').style.display = 'none';
+            document.getElementById('login-box').style.display = 'block';
+
+            contentEl.innerHTML = '';
+            const btn = document.createElement('button');
+            btn.className = 'primary-btn';
+            btn.textContent = 'Sign in with Google';
+            btn.onclick = () => { signedOutShown = false; tokenClient.requestAccessToken(); };
+            contentEl.appendChild(btn);
+            setStatus('Your Google sign-in expired. Please sign in again.');
+        }
+
+        // Every Drive call goes through here: refreshes first if the token is
+        // about to expire, and retries exactly once after a silent re-auth if
+        // the call still comes back 401.
+        async function withAuth(run) {
+            if (tokenLooksExpired()) await refreshAccessToken();
+            try {
+                return await run();
+            } catch (err) {
+                if (!isAuthError(err)) throw err;
+                const ok = await refreshAccessToken();
+                if (!ok) { reportSignedOut(); throw err; }
+                return await run();
+            }
+        }
+
+        // fetch() against Drive with the same refresh-and-retry behaviour.
+        // Throws an Error carrying .status so isAuthError can see it.
+        async function driveFetch(url, init) {
+            return withAuth(async () => {
+                const opts = Object.assign({}, init);
+                opts.headers = Object.assign({}, opts.headers, {
+                    Authorization: 'Bearer ' + accessToken
+                });
+                const resp = await fetch(url, opts);
+                if (!resp.ok) {
+                    const text = await resp.text().catch(() => '');
+                    const err = new Error(`Drive returned ${resp.status}: ${text.slice(0, 300)}`);
+                    err.status = resp.status;
+                    throw err;
+                }
+                return resp;
+            });
         }
 
         // ---------- Step 2: sign in with Google (gets an access token) ----------
@@ -476,7 +677,7 @@
                 statsEl.innerHTML = `${count} thumbnail${count === 1 ? '' : 's'} cached in Drive<br>≈ ${mb} MB`;
                 if (lastThumbUploadError) {
                     statsEl.innerHTML += `<br><br><span style="color:var(--accent-none);font-size:11px;">` +
-                        `Last upload error: ${lastThumbUploadError}</span>`;
+                        `Last upload error: ${escapeHtml(lastThumbUploadError)}</span>`;
                 }
             } catch (err) {
                 statsEl.textContent = 'Could not read cache info: ' + (err.message || err);
@@ -500,11 +701,12 @@
                 // instead of awaiting one full round-trip per thumbnail in sequence
                 // (previously this could take minutes for a large cache).
                 await Promise.all(ids.map(id =>
-                    gapi.client.drive.files.delete({ fileId: id })
+                    withAuth(() => gapi.client.drive.files.delete({ fileId: id }))
                         .catch(err => console.warn('Could not delete cached thumbnail', id, err))
                 ));
                 driveThumbIndexPromise = null; // force a fresh rebuild next time anything needs it
-                await setMeta(THUMB_META_KEY, { entries: [], lastSyncTime: null });
+                lastThumbSyncTime = null;
+                await setMeta(THUMB_META_KEY, { entries: [], lastSyncTime: null, syncedAt: Date.now() });
                 statsEl.textContent = 'Cache cleared.';
             } catch (err) {
                 statsEl.textContent = 'Failed to clear cache: ' + (err.message || err);
@@ -514,42 +716,46 @@
         // ---------- Step 3: read the saved collections list from Drive's
         // hidden "appDataFolder" (a private space only this app can see) ----------
         async function loadCollections() {
-            const listResp = await gapi.client.drive.files.list({
+            const listResp = await withAuth(() => gapi.client.drive.files.list({
                 spaces: 'appDataFolder',
                 q: `name='${COLLECTIONS_FILENAME}'`,
                 fields: 'files(id, name)'
-            });
+            }));
             const files = listResp.result.files;
             if (files.length === 0) return { fileId: null, collections: [] };
 
             const fileId = files[0].id;
-            const contentResp = await gapi.client.drive.files.get({ fileId, alt: 'media' });
+            const contentResp = await withAuth(() => gapi.client.drive.files.get({ fileId, alt: 'media' }));
             const collections = JSON.parse(contentResp.body || '[]');
             return { fileId, collections };
         }
 
-        // ---------- Step 4: save the collections list back to appDataFolder ----------
-        async function saveCollections(fileId, collections) {
-            const content = JSON.stringify(collections);
-            const boundary = '-------314159265358979323846';
-            const metadata = { name: COLLECTIONS_FILENAME, mimeType: 'application/json' };
+        // ---------- Step 4: save a JSON file into appDataFolder ----------
+        // One writer for both collections.json and layouts.json. Each of those
+        // used to hand-build a multipart/related body with the same hardcoded
+        // boundary string; a third code path (the thumbnail uploader) did the
+        // same job with FormData. FormData is the version that is provably
+        // right - the browser generates the boundary and encodes the parts, so
+        // there is no boundary to collide with the content.
+        async function saveJsonToAppData(filename, fileId, value) {
+            const metadata = { name: filename, mimeType: 'application/json' };
             if (!fileId) metadata.parents = ['appDataFolder'];
 
-            const multipartBody =
-                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            form.append('file', new Blob([JSON.stringify(value)], { type: 'application/json' }));
 
-            const path = fileId
-                ? `/upload/drive/v3/files/${fileId}?uploadType=multipart`
-                : `/upload/drive/v3/files?uploadType=multipart`;
+            const url = fileId
+                ? `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`
+                : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
 
-            const resp = await gapi.client.request({
-                path,
-                method: fileId ? 'PATCH' : 'POST',
-                headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-                body: multipartBody
-            });
-            return resp.result.id;
+            const resp = await driveFetch(url, { method: fileId ? 'PATCH' : 'POST', body: form });
+            const result = await resp.json();
+            return result.id;
+        }
+
+        function saveCollections(fileId, collections) {
+            return saveJsonToAppData(COLLECTIONS_FILENAME, fileId, collections);
         }
 
         // ---------- Step 5: render the "choose / create collection" screen ----------
@@ -606,9 +812,14 @@
             const updated = collections.slice();
             updated.splice(idx, 1); // remove exactly this one entry, by position
             setStatus('Removing...');
-            const newFileId = await saveCollections(fileId, updated);
-            window._collectionsState = { fileId: newFileId, collections: updated };
-            await showCollectionsScreen();
+            try {
+                const newFileId = await saveCollections(fileId, updated);
+                window._collectionsState = { fileId: newFileId, collections: updated };
+                await showCollectionsScreen();
+            } catch (err) {
+                console.error('Could not remove the collection:', err);
+                setStatus('Could not remove that collection: ' + (err.message || err));
+            }
         }
 
         // ---------- Step 6: "Add new collection" - opens the Google Picker
@@ -632,13 +843,21 @@
             const displayName = prompt('Name this collection:', folder.name) || folder.name;
 
             const { fileId, collections } = window._collectionsState;
-            collections.push({ id: folder.id, name: displayName });
+            // Build the new list without touching the live one, and only
+            // commit it after Drive has confirmed the write. Pushing first
+            // meant a failed save (offline, expired token) left a collection
+            // on screen that had never actually been persisted.
+            const updated = collections.concat([{ id: folder.id, name: displayName }]);
 
             setStatus('Saving...');
-            const newFileId = await saveCollections(fileId, collections);
-            window._collectionsState = { fileId: newFileId, collections };
-
-            await showCollectionsScreen();
+            try {
+                const newFileId = await saveCollections(fileId, updated);
+                window._collectionsState = { fileId: newFileId, collections: updated };
+                await showCollectionsScreen();
+            } catch (err) {
+                console.error('Could not save the new collection:', err);
+                setStatus('Could not save that collection: ' + (err.message || err));
+            }
         }
 
         // ---------- Image cache (IndexedDB) - the browser-side equivalent
@@ -739,13 +958,7 @@
                 await cacheDelete(cacheKey);
             }
 
-            const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-                headers: { Authorization: 'Bearer ' + accessToken }
-            });
-            if (!resp.ok) {
-                const text = await resp.text().catch(() => '');
-                throw new Error(`Drive returned ${resp.status} for file ${fileId}: ${text.slice(0, 300)}`);
-            }
+            const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
             const blob = await resp.blob();
             if (!blob.type.startsWith('image/')) {
                 const text = await blob.text().catch(() => '');
@@ -801,6 +1014,7 @@
                     URL.revokeObjectURL(objUrl);
                 };
                 img.onerror = () => {
+                    URL.revokeObjectURL(objUrl); // was leaked on this path
                     reject(new Error(`Could not decode image (blob type="${blob.type}", size=${blob.size} bytes)`));
                 };
                 img.src = objUrl;
@@ -838,6 +1052,16 @@
         // re-listing everything every single time.
         const THUMB_META_KEY = 'driveThumbIndex';
         let driveThumbIndexPromise = null;
+        let lastThumbSyncTime = null; // remembered so a re-persist doesn't lose it
+
+        function persistThumbIndex(index, syncTime) {
+            if (syncTime) lastThumbSyncTime = syncTime;
+            return setMeta(THUMB_META_KEY, {
+                entries: [...index.entries()],
+                lastSyncTime: lastThumbSyncTime,
+                syncedAt: Date.now()
+            }).catch(err => console.warn('Could not persist thumbnail index:', err));
+        }
         function getDriveThumbIndex() {
             if (driveThumbIndexPromise) return driveThumbIndexPromise;
             driveThumbIndexPromise = (async () => {
@@ -845,8 +1069,17 @@
                 try { persisted = await getMeta(THUMB_META_KEY); }
                 catch (err) { console.warn('Could not read persisted thumbnail index:', err); }
 
-                const index = new Map(persisted ? persisted.entries : []); // name -> {id, size}
-                const lastSyncTime = persisted ? persisted.lastSyncTime : null;
+                // The incremental sync can only ever ADD entries (it filters on
+                // createdTime), so it never notices thumbnails deleted from
+                // another device. Two cheap guards: a full resync once the
+                // local index gets stale, and per-entry self-healing when a
+                // fetch 404s (see getThumbnailBlobUrl).
+                const FULL_RESYNC_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+                const stale = !persisted || !persisted.syncedAt ||
+                    (Date.now() - persisted.syncedAt) > FULL_RESYNC_AFTER_MS;
+
+                const index = new Map((persisted && !stale) ? persisted.entries : []); // name -> {id, size}
+                const lastSyncTime = stale ? null : (persisted ? persisted.lastSyncTime : null);
                 let newestSeen = lastSyncTime;
 
                 let q = "name contains '_thumb.jpg' and trashed=false";
@@ -854,11 +1087,11 @@
 
                 let pageToken;
                 do {
-                    const resp = await gapi.client.drive.files.list({
+                    const resp = await withAuth(() => gapi.client.drive.files.list({
                         spaces: 'appDataFolder', q,
                         fields: 'nextPageToken, files(id, name, size, createdTime)',
                         pageSize: 1000, pageToken
-                    });
+                    }));
                     (resp.result.files || []).forEach(f => {
                         index.set(f.name, { id: f.id, size: Number(f.size) || 0 });
                         if (!newestSeen || f.createdTime > newestSeen) newestSeen = f.createdTime;
@@ -866,11 +1099,10 @@
                     pageToken = resp.result.nextPageToken;
                 } while (pageToken);
 
-                if (newestSeen && newestSeen !== lastSyncTime) {
+                if (stale || (newestSeen && newestSeen !== lastSyncTime)) {
                     // Not on the critical path - the resolved Map is already
                     // correct in memory regardless of whether this succeeds.
-                    setMeta(THUMB_META_KEY, { entries: [...index.entries()], lastSyncTime: newestSeen })
-                        .catch(err => console.warn('Could not persist thumbnail index:', err));
+                    persistThumbIndex(index, newestSeen);
                 }
                 return index;
             })();
@@ -878,10 +1110,7 @@
         }
 
         async function fetchDriveThumbBlob(driveThumbId) {
-            const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${driveThumbId}?alt=media`, {
-                headers: { Authorization: 'Bearer ' + accessToken }
-            });
-            if (!resp.ok) throw new Error(`Drive returned ${resp.status} fetching cached thumbnail ${driveThumbId}`);
+            const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveThumbId}?alt=media`);
             return resp.blob();
         }
 
@@ -920,15 +1149,11 @@
                 const form = new FormData();
                 form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
                 form.append('file', thumbBlob);
-                const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-                    method: 'POST',
-                    headers: { Authorization: 'Bearer ' + accessToken }, // no Content-Type - the browser sets the multipart boundary itself
-                    body: form
-                });
-                if (!resp.ok) {
-                    const text = await resp.text().catch(() => '');
-                    throw new Error(`Drive upload returned ${resp.status}: ${text.slice(0, 300)}`);
-                }
+                // No Content-Type header - the browser sets the multipart boundary itself.
+                const resp = await driveFetch(
+                    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+                    { method: 'POST', body: form }
+                );
                 const result = await resp.json();
                 index.set(thumbName, { id: result.id, size: thumbBlob.size });
                 lastThumbUploadError = null;
@@ -950,11 +1175,24 @@
             // another) will already be there.
             try {
                 const index = await getDriveThumbIndex();
-                const entry = index.get(fileId + '_thumb.jpg');
+                const thumbName = fileId + '_thumb.jpg';
+                const entry = index.get(thumbName);
                 if (entry) {
-                    const thumbBlob = await fetchDriveThumbBlob(entry.id);
-                    await cacheSet(cacheKey, thumbBlob);
-                    return URL.createObjectURL(thumbBlob);
+                    try {
+                        const thumbBlob = await fetchDriveThumbBlob(entry.id);
+                        await cacheSet(cacheKey, thumbBlob);
+                        return URL.createObjectURL(thumbBlob);
+                    } catch (err) {
+                        // 404 means this thumbnail was deleted elsewhere (e.g.
+                        // "Clear cache" on another device). Drop the stale
+                        // entry so we stop retrying it and regenerate below.
+                        if (err && err.status === 404) {
+                            index.delete(thumbName);
+                            persistThumbIndex(index, null);
+                        } else {
+                            throw err;
+                        }
+                    }
                 }
             } catch (err) {
                 console.warn('Drive thumbnail lookup failed for', fileId, '- falling back to full image:', err);
@@ -970,6 +1208,54 @@
         async function getFullImageBlobUrl(fileId) {
             const blob = await fetchFullImageBlob(fileId);
             return URL.createObjectURL(blob);
+        }
+
+        // ---------- Object-URL ownership ----------
+        // Every URL.createObjectURL pins its blob in memory until it is
+        // explicitly revoked, and nothing here used to revoke anything: after
+        // browsing twenty countries, every thumbnail from all twenty was still
+        // held. These two caches give each URL an owner and a lifetime.
+        //
+        // The modal cache does double duty: organise mode re-renders the whole
+        // modal on every arrow press, and each render used to re-read every
+        // thumbnail from IndexedDB and mint a fresh (leaked) URL for it. Now a
+        // re-render reuses the URLs it already has.
+        const modalObjectUrls = new Map(); // fileId -> object URL, owned by the open modal
+        const modalUrlPending = new Map(); // fileId -> in-flight promise, so N renders share one read
+
+        function modalThumbUrl(fileId) {
+            if (modalObjectUrls.has(fileId)) return Promise.resolve(modalObjectUrls.get(fileId));
+            if (modalUrlPending.has(fileId)) return modalUrlPending.get(fileId);
+            const p = getThumbnailBlobUrl(fileId).then(url => {
+                modalUrlPending.delete(fileId);
+                // A concurrent caller may have won the race; keep one URL only.
+                if (modalObjectUrls.has(fileId)) {
+                    URL.revokeObjectURL(url);
+                    return modalObjectUrls.get(fileId);
+                }
+                modalObjectUrls.set(fileId, url);
+                return url;
+            }).catch(err => {
+                modalUrlPending.delete(fileId);
+                throw err;
+            });
+            modalUrlPending.set(fileId, p);
+            return p;
+        }
+
+        function releaseModalObjectUrls() {
+            modalObjectUrls.forEach(url => URL.revokeObjectURL(url));
+            modalObjectUrls.clear();
+            // Anything still in flight will resolve into an unowned URL, so
+            // revoke it as it lands instead of leaking it.
+            modalUrlPending.forEach(p => p.then(url => URL.revokeObjectURL(url)).catch(() => {}));
+            modalUrlPending.clear();
+        }
+
+        let enlargeObjectUrl = null;
+        function setEnlargeObjectUrl(url) {
+            if (enlargeObjectUrl) URL.revokeObjectURL(enlargeObjectUrl);
+            enlargeObjectUrl = url;
         }
 
         // English names for country codes (folder names in Drive) - same
@@ -1044,15 +1330,22 @@
         // ============================================================
         // Collection view: map + list + search + modal
         // ============================================================
-        // Antique palette (the app's only theme now - matches the :root
-        // CSS custom properties). Leaflet draws layer colors via JS, not
-        // pure CSS, so they're mirrored here rather than read from CSS.
-        const OWNED_COLOR = '#4b6b3a';
-        const NONE_COLOR = '#a13d2b';
-        const MUTED_COLOR = '#a89a78';
-        const BORDER_COLOR = 'rgba(59,42,26,0.45)';
-        const FRAME_COLOR = '#5a3d22';
-        const FRAME_LIGHT_COLOR = '#e8dcbb';
+        // Leaflet styles its layers from JavaScript, not CSS, so these colors
+        // have to exist as JS values - but they are READ FROM the :root custom
+        // properties rather than written out a second time. Keeping two hand-
+        // maintained copies of the palette is exactly how the stray non-theme
+        // colors found in the v2.01 audit got in: with one source, a literal
+        // hex anywhere else in the file is by definition a mistake.
+        const cssVar = (function () {
+            const style = getComputedStyle(document.documentElement);
+            return name => style.getPropertyValue(name).trim();
+        })();
+        const OWNED_COLOR = cssVar('--accent-owned');
+        const NONE_COLOR = cssVar('--accent-none');
+        const MUTED_COLOR = cssVar('--muted');
+        const BORDER_COLOR = cssVar('--map-border');
+        const FRAME_COLOR = cssVar('--frame');
+        const FRAME_LIGHT_COLOR = cssVar('--frame-light');
 
         // Antique-style striped border + lat/long grid, anchored in map
         // space (lat/lng) like the compass rose, NOT screen space - so it
@@ -1129,9 +1422,14 @@
         // clicking an owned one opens its modal instead, which already
         // shows the name). Replaces the old manual "Show names" toggle.
         let clickedLabelCodes = new Set();
+        // Which countries currently have a PINNED (permanent) name label, so
+        // refreshLabels2D only rebinds the tooltips that actually changed.
+        // Reset in initMap, since the layers themselves are rebuilt there.
+        let labelShownCodes = new Set();
         let COUNTRY_NAME_LOOKUP = {};
         let colorMode = 'both'; // 'owned' | 'none' | 'both' - cycles via the color-mode button ('neither'/Off was removed)
         let currentView = 'map';   // 'map' | 'list'
+        const countryRowEls = new Map(); // code -> list-view row element (see renderList)
         let leafletMap = null;
         let worldLayerGroup = null; // the L.geoJSON layer for all visible countries
 
@@ -1187,6 +1485,16 @@
             currentView = 'map';
             colorMode = 'both';
             countryLayers = {};
+            // Drop everything tied to the collection being closed, so nothing
+            // stale can be reused by the next one (see the geo-cache bug that
+            // let one collection's filtered map leak into another).
+            labelShownCodes = new Set();
+            clickedLabelCodes = new Set();
+            countryRowEls.clear();
+            releaseModalObjectUrls();
+            cvCountries = [];
+            cvCountryMap = {};
+            collectionData = {};
             document.getElementById('collection-view').style.display = 'none';
             document.getElementById('login-box').style.display = 'block';
             contentEl.innerHTML = '<p>Loading your collections...</p>';
@@ -1218,36 +1526,61 @@
         let layoutsCache = null; // {fileId, data: {collectionId: {countryCode: {categories:[{name,imageIds}]}}}}
         let currentCollectionId = null;
 
+        // Countries edited in THIS session, as "collectionId|countryCode".
+        // Only these get written over the remote copy on save - see below.
+        const dirtyLayoutKeys = new Set();
+
+        async function readLayoutsFile() {
+            const listResp = await withAuth(() => gapi.client.drive.files.list({
+                spaces: 'appDataFolder', q: `name='${LAYOUTS_FILENAME}'`, fields: 'files(id, name)'
+            }));
+            const files = listResp.result.files;
+            if (files.length === 0) return { fileId: null, data: {} };
+            const fileId = files[0].id;
+            const contentResp = await withAuth(() => gapi.client.drive.files.get({ fileId, alt: 'media' }));
+            return { fileId, data: JSON.parse(contentResp.body || '{}') };
+        }
+
         async function loadLayouts() {
             if (layoutsCache) return layoutsCache;
-            const listResp = await gapi.client.drive.files.list({
-                spaces: 'appDataFolder', q: `name='${LAYOUTS_FILENAME}'`, fields: 'files(id, name)'
-            });
-            const files = listResp.result.files;
-            if (files.length === 0) { layoutsCache = { fileId: null, data: {} }; return layoutsCache; }
-            const fileId = files[0].id;
-            const contentResp = await gapi.client.drive.files.get({ fileId, alt: 'media' });
-            layoutsCache = { fileId, data: JSON.parse(contentResp.body || '{}') };
+            layoutsCache = await readLayoutsFile();
             return layoutsCache;
         }
 
+        // layouts.json used to be read once per page load and then written back
+        // WHOLE, so a desktop tab opened in the morning would silently erase
+        // every category created on the phone since. Now the remote file is
+        // re-read immediately before each write and only the countries actually
+        // edited in this session are laid over it - so two devices editing
+        // different countries no longer destroy each other's work.
         async function saveLayoutsToDrive() {
-            const content = JSON.stringify(layoutsCache.data);
-            const boundary = '-------314159265358979323846';
-            const metadata = { name: LAYOUTS_FILENAME, mimeType: 'application/json' };
-            if (!layoutsCache.fileId) metadata.parents = ['appDataFolder'];
-            const multipartBody =
-                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${JSON.stringify(metadata)}\r\n` +
-                `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n--${boundary}--`;
-            const path = layoutsCache.fileId
-                ? `/upload/drive/v3/files/${layoutsCache.fileId}?uploadType=multipart`
-                : `/upload/drive/v3/files?uploadType=multipart`;
-            const resp = await gapi.client.request({
-                path, method: layoutsCache.fileId ? 'PATCH' : 'POST',
-                headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-                body: multipartBody
+            const localData = layoutsCache.data;
+
+            let remote;
+            try {
+                remote = await readLayoutsFile();
+            } catch (err) {
+                // If the re-read fails we still want the user's edit saved;
+                // fall back to the previous whole-file behaviour rather than
+                // losing what they just did.
+                console.warn('Could not re-read layouts before saving, writing local copy:', err);
+                remote = { fileId: layoutsCache.fileId, data: localData };
+            }
+
+            const merged = remote.data || {};
+            dirtyLayoutKeys.forEach(key => {
+                const sep = key.indexOf('|');
+                const colId = key.slice(0, sep);
+                const code = key.slice(sep + 1);
+                const localEntry = localData[colId] && localData[colId][code];
+                if (!localEntry) return;
+                if (!merged[colId]) merged[colId] = {};
+                merged[colId][code] = localEntry;
             });
-            layoutsCache.fileId = resp.result.id;
+
+            const newId = await saveJsonToAppData(LAYOUTS_FILENAME, remote.fileId, merged);
+            layoutsCache = { fileId: remote.fileId || newId, data: merged };
+            dirtyLayoutKeys.clear();
         }
 
         function getCountryLayout(code) {
@@ -1312,7 +1645,14 @@
         document.getElementById('organize-confirm-icon-btn').onclick = async () => {
             getCountryLayout(currentModalCode).categories = draftCategories;
             getCountryLayout(currentModalCode).uncategorizedOrder = draftUncategorizedOrder;
-            await saveLayoutsToDrive();
+            dirtyLayoutKeys.add(currentCollectionId + '|' + currentModalCode);
+            try {
+                await saveLayoutsToDrive();
+            } catch (err) {
+                console.error('Could not save categories:', err);
+                alert('Could not save those categories: ' + (err.message || err));
+                return; // stay in organize mode so the work isn't lost
+            }
             organizeMode = false;
             editingCategoryIndex = null;
             updateHeaderIcons();
@@ -1322,8 +1662,11 @@
         // Renders a row of thumbnails (used in normal view mode)
         function renderImageGroup(images) {
             const grid = document.createElement('div');
-            const cols = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(images.length))));
-            grid.style.cssText = `display:grid;grid-template-columns:repeat(${cols}, 130px);gap:10px;justify-content:center;`;
+            grid.className = 'thumb-grid';
+            // Upper bound on columns only - auto-fill picks the real number
+            // from the width available, so this just stops a 2-photo country
+            // from being stretched across a wide desktop modal.
+            grid.style.setProperty('--cols', String(Math.min(6, Math.max(1, images.length))));
 
             images.forEach(img => {
                 const wrapper = document.createElement('div');
@@ -1349,7 +1692,7 @@
                 };
                 refreshSelectedLook();
                 wrapper.appendChild(el);
-                getThumbnailBlobUrl(img.id)
+                modalThumbUrl(img.id)
                     .then(url => { el.src = url; spinner.remove(); })
                     .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); spinner.remove(); });
 
@@ -1458,7 +1801,7 @@
                 const el = document.createElement('img');
                 el.style.cssText = 'width:90px;height:90px;object-fit:contain;background:rgba(255,255,255,0.06);border-radius:6px;border:1px solid var(--border);padding:2px;';
                 imgBox.appendChild(el);
-                getThumbnailBlobUrl(img.id)
+                modalThumbUrl(img.id)
                     .then(url => { el.src = url; spinner.remove(); })
                     .catch(err => { console.error('Thumbnail failed for', img.id, img.name, ':', err); el.alt = '⚠'; spinner.remove(); });
 
@@ -1626,6 +1969,7 @@
             modal.style.display = 'none';
             modalBackdrop.style.display = 'none';
             document.getElementById('cv-main').classList.remove('dimmed');
+            releaseModalObjectUrls(); // these belong to the modal that just closed
             if (!fromPopstate) {
                 suppressNextPopstate = true;
                 history.back(); // consumes the 'modal' state we pushed when it opened
@@ -1661,6 +2005,7 @@
                     URL.revokeObjectURL(objUrl);
                 };
                 img.onerror = () => {
+                    URL.revokeObjectURL(objUrl); // was leaked on this path
                     reject(new Error(`Could not decode image (blob type="${blob.type}", size=${blob.size} bytes)`));
                 };
                 img.src = objUrl;
@@ -1689,9 +2034,12 @@
                 }
             }
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
+            const url = URL.createObjectURL(blob);
+            a.href = url;
             a.download = filename;
             a.click();
+            // Give the browser a moment to start the download, then release it.
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
         }
 
         document.getElementById('share-confirm-icon-btn').onclick = async () => {
@@ -1746,7 +2094,7 @@
             for (const group of orderedGroups) {
                 const groupSelected = group.images.filter(img => selectedForShare.has(img.id));
                 if (groupSelected.length === 0) continue;
-                if (group.heading) bodyHtml += `<h3>${group.heading}</h3>`;
+                if (group.heading) bodyHtml += `<h3>${escapeHtml(group.heading)}</h3>`;
                 bodyHtml += '<div class="grid">';
                 for (const img of groupSelected) {
                     bodyHtml += `<img src="${dataUrlById[img.id]}">`;
@@ -1756,7 +2104,7 @@
 
             const countryName = COUNTRY_NAMES[code] || code;
             const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>${countryName} - Banknotes & Coins</title>
+<html><head><meta charset="UTF-8"><title>${escapeHtml(countryName)} - Banknotes &amp; Coins</title>
 <style>
 body{font-family:Georgia,'Times New Roman',serif;background:#ece2c8;color:#3b2a1a;padding:24px;text-align:center;}
 h1{color:#4b6b3a;}
@@ -1766,7 +2114,7 @@ img{max-width:280px;max-height:280px;border-radius:6px;border:1px solid rgba(59,
     background:rgba(59,42,26,0.06);padding:4px;box-sizing:border-box;}
 </style></head>
 <body>
-<h1>${countryName}</h1>
+<h1>${escapeHtml(countryName)}</h1>
 ${bodyHtml}
 </body></html>`;
 
@@ -1782,9 +2130,16 @@ ${bodyHtml}
             const overlay = document.getElementById('enlarge-overlay');
             const img = document.getElementById('enlarge-img');
             overlay.style.display = 'block';
-            getFullImageBlobUrl(fileId).then(url => { img.src = url; });
+            getFullImageBlobUrl(fileId).then(url => {
+                setEnlargeObjectUrl(url); // revokes the previous full-size image
+                img.src = url;
+            }).catch(err => console.error('Could not open full image', fileId, err));
         }
-        document.getElementById('enlarge-overlay').onclick = function() { this.style.display = 'none'; };
+        document.getElementById('enlarge-overlay').onclick = function() {
+            this.style.display = 'none';
+            document.getElementById('enlarge-img').removeAttribute('src');
+            setEnlargeObjectUrl(null);
+        };
 
         // ---------- List view ----------
         function renderList() {
@@ -1825,16 +2180,33 @@ ${bodyHtml}
                 `countr${ownedCount === 1 ? 'y' : 'ies'} — ${ownedCount}/${worldCount} of the world (${pct}%)`;
             listDiv.appendChild(stats);
 
+            // Built into a fragment and appended once (rather than ~250
+            // separate appends into the live DOM), and each row is kept in
+            // countryRowEls so applyFilters can show/hide them directly
+            // instead of re-running querySelectorAll on every keystroke.
+            countryRowEls.clear();
+            const frag = document.createDocumentFragment();
             entries.forEach(entry => {
                 const item = document.createElement('div');
                 item.className = 'country-item';
                 item.dataset.code = entry.code;
                 item.dataset.name = entry.name.toLowerCase();
                 if (!entry.owned) item.style.opacity = '0.5';
-                item.innerHTML = `<span>${entry.name}</span><span class="count">${entry.owned ? entry.count : ''}</span>`;
+
+                // textContent rather than innerHTML - country names come from
+                // the GeoJSON, so there's no reason to parse them as markup.
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = entry.name;
+                const countSpan = document.createElement('span');
+                countSpan.className = 'count';
+                countSpan.textContent = entry.owned ? String(entry.count) : '';
+                item.append(nameSpan, countSpan);
+
                 if (entry.owned) item.onclick = () => openModal(entry.code);
-                listDiv.appendChild(item);
+                countryRowEls.set(entry.code, item);
+                frag.appendChild(item);
             });
+            listDiv.appendChild(frag);
         }
 
         // ---------- View toggle, search, filters (unified logic) ----------
@@ -1947,8 +2319,8 @@ ${bodyHtml}
                     }
                     if (show) shownCodes.add(code); else shownCodes.delete(code);
                 });
-                document.querySelectorAll('.country-item').forEach(item => {
-                    item.style.display = passesFilters(item.dataset.code, item.dataset.name) ? 'flex' : 'none';
+                countryRowEls.forEach((item, code) => {
+                    item.style.display = passesFilters(code, item.dataset.name) ? 'flex' : 'none';
                 });
                 refreshLabels2D();
                 if (animate && changes.length) {
@@ -1994,19 +2366,29 @@ ${bodyHtml}
             // name), or it's currently matching an active search. There's
             // no more manual "Show names" toggle - hover already works for
             // any country via the tooltip binding below regardless.
+            // Leaflet has no setter for a tooltip's `permanent` flag, so
+            // changing it does mean unbind + rebind - but this used to do that
+            // for ALL ~250 countries on every single call, and it is called on
+            // every keystroke. That was roughly 500 tooltip operations per
+            // character typed, which is what made search feel heavy on Android.
+            // labelShownCodes remembers what is currently pinned, so now only
+            // the handful of countries whose state actually flips are touched.
             function refreshLabels2D() {
                 const query = searchBox.value.trim();
                 const isSearching = query !== '';
+                const lowered = query.toLowerCase();
                 Object.entries(countryLayers).forEach(([code, layers]) => {
                     const name = COUNTRY_NAME_LOOKUP[code] || code;
                     const shouldShow = clickedLabelCodes.has(code) ||
-                        (isSearching && matchesQuery(code, name, query.toLowerCase()));
+                        (isSearching && matchesQuery(code, name, lowered));
+                    if (labelShownCodes.has(code) === shouldShow) return; // unchanged - leave it alone
                     layers.forEach(layer => {
                         if (layer.getTooltip()) layer.unbindTooltip();
                         // className is applied either way so hover-only tooltips get the
                         // same transparent/themed look instead of Leaflet's default white bubble.
                         layer.bindTooltip(name, { permanent: shouldShow, direction: 'center', className: 'country-label' });
                     });
+                    if (shouldShow) labelShownCodes.add(code); else labelShownCodes.delete(code);
                 });
             }
             window._refreshLabels2D = refreshLabels2D;
@@ -2021,10 +2403,17 @@ ${bodyHtml}
                 }
             }
 
+            // The ghost suggestion updates instantly (it must track the caret),
+            // but the map/list filter pass is debounced - it touches every
+            // country layer, and running it on each keypress made typing lag.
+            let searchDebounce = null;
             searchBox.oninput = () => {
                 updateGhostSuggestion();
-                const matched = applyFilters();
-                if (searchBox.value.trim() !== '' && matched.length === 1) focusOnMatches(matched);
+                clearTimeout(searchDebounce);
+                searchDebounce = setTimeout(() => {
+                    const matched = applyFilters();
+                    if (searchBox.value.trim() !== '' && matched.length === 1) focusOnMatches(matched);
+                }, 120);
             };
             searchBox.onkeydown = (e) => {
                 if ((e.key === 'Tab' || e.key === 'ArrowRight') && searchGhost.value && searchBox.selectionStart === searchBox.value.length) {
@@ -2109,12 +2498,20 @@ ${bodyHtml}
         // simplified (via Mapshaper, topology-aware - shared borders stay
         // identical between neighboring countries) and hosted right
         // alongside this page, so there's no external dependency.
-        let cachedGeoFeatures = null;
+        // Only the PARSED FILE is cached, never the filtered result. featureFilter
+        // depends on collectionData (small territories are drawn only if you own
+        // them), so caching the filtered array meant the first collection opened
+        // in a session decided the map for every collection after it: open one
+        // without Malta, then one with it, and Malta was missing from the map,
+        // from the list, and from the "of the world" denominator. Re-filtering is
+        // a few hundred cheap comparisons; the fetch and JSON parse - the part
+        // actually worth caching - still happen exactly once.
+        let cachedGeoJson = null;
         async function getGeoFeatures() {
-            if (cachedGeoFeatures) return cachedGeoFeatures;
-            const geoData = await fetch('countries.geojson').then(r => r.json());
-            cachedGeoFeatures = geoData.features.filter(featureFilter);
-            return cachedGeoFeatures;
+            if (!cachedGeoJson) {
+                cachedGeoJson = await fetch('countries.geojson').then(r => r.json());
+            }
+            return cachedGeoJson.features.filter(featureFilter);
         }
 
         // Builds the striped border + lat/long grid as a plain Leaflet
@@ -2254,6 +2651,7 @@ ${bodyHtml}
         async function initMap() {
             countryLayers = {};
             COUNTRY_NAME_LOOKUP = {};
+            labelShownCodes = new Set(); // layers are rebuilt below, so no tooltip is pinned yet
 
             leafletMap = L.map('map', {
                 preferCanvas: true,
@@ -2347,10 +2745,10 @@ ${bodyHtml}
                 // an exact name= match was too strict and would silently
                 // find nothing (and therefore silently skip the whole
                 // feature) over something as small as a leftover ".txt".
-                const listResp = await gapi.client.drive.files.list({
+                const listResp = await withAuth(() => gapi.client.drive.files.list({
                     q: `'${rootFolderId}' in parents and name contains '${MULTI_CURRENCY_CONFIG_FILENAME}' and trashed=false`,
                     fields: 'files(id, name, mimeType)'
-                });
+                }));
                 const candidates = listResp.result.files || [];
                 // Prefer an exact name match if there happens to be more
                 // than one candidate; otherwise just take the first.
@@ -2367,10 +2765,10 @@ ${bodyHtml}
                 // it doesn't matter which way the file was created.
                 let text;
                 if (file.mimeType === 'application/vnd.google-apps.document') {
-                    const exportResp = await gapi.client.drive.files.export({ fileId: file.id, mimeType: 'text/plain' });
+                    const exportResp = await withAuth(() => gapi.client.drive.files.export({ fileId: file.id, mimeType: 'text/plain' }));
                     text = exportResp.body;
                 } else {
-                    const contentResp = await gapi.client.drive.files.get({ fileId: file.id, alt: 'media' });
+                    const contentResp = await withAuth(() => gapi.client.drive.files.get({ fileId: file.id, alt: 'media' }));
                     text = contentResp.body;
                 }
 
@@ -2392,32 +2790,73 @@ ${bodyHtml}
             }
         }
 
+        // Lists the images in MANY folders using a handful of requests instead
+        // of one per folder. Drive accepts several "'id' in parents" clauses in
+        // a single query, so ~25 folders are asked for at once and the results
+        // are grouped back up client-side using each file's `parents`. For a
+        // 100-country collection this is the difference between 101 round trips
+        // (throttled to six at a time by the browser) and about five - by far
+        // the biggest single cost in opening a collection.
+        const FOLDERS_PER_QUERY = 25; // keeps the query URL well inside Drive's length limit
+        async function listImagesForFolders(folders) {
+            const byFolderId = {};
+            folders.forEach(f => { byFolderId[f.id] = []; });
+
+            const chunks = [];
+            for (let i = 0; i < folders.length; i += FOLDERS_PER_QUERY) {
+                chunks.push(folders.slice(i, i + FOLDERS_PER_QUERY));
+            }
+
+            await Promise.all(chunks.map(async chunk => {
+                const parentClause = chunk.map(f => `'${f.id}' in parents`).join(' or ');
+                let pageToken;
+                do {
+                    const resp = await withAuth(() => gapi.client.drive.files.list({
+                        q: `(${parentClause}) and mimeType contains 'image/' and trashed=false`,
+                        // `parents` is what lets us put each file back in its folder.
+                        fields: 'nextPageToken, files(id, name, parents)',
+                        pageSize: 1000,
+                        pageToken
+                    }));
+                    (resp.result.files || []).forEach(file => {
+                        (file.parents || []).forEach(parentId => {
+                            if (byFolderId[parentId]) {
+                                byFolderId[parentId].push({ id: file.id, name: file.name });
+                            }
+                        });
+                    });
+                    pageToken = resp.result.nextPageToken;
+                } while (pageToken);
+            }));
+
+            // A batched query interleaves folders arbitrarily, so sort by name
+            // for a stable, predictable order. (Countries you've organised
+            // manually keep their own saved order - see applyOrder.)
+            Object.values(byFolderId).forEach(images =>
+                images.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+            );
+            return byFolderId;
+        }
+
         async function fetchCollectionData(rootFolderId) {
             const [foldersResp, currencyGroups] = await Promise.all([
-                gapi.client.drive.files.list({
+                withAuth(() => gapi.client.drive.files.list({
                     q: `'${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
                     fields: 'files(id, name)',
                     pageSize: 1000
-                }),
+                })),
                 readCurrencyGroups(rootFolderId)
             ]);
             const folders = foldersResp.result.files;
 
-            async function listImages(folder) {
-                const imagesResp = await gapi.client.drive.files.list({
-                    q: `'${folder.id}' in parents and mimeType contains 'image/' and trashed=false`,
-                    fields: 'files(id, name)',
-                    pageSize: 1000
-                });
-                return imagesResp.result.files;
-            }
-            // Every folder's images are fetched in parallel (country
-            // folders and currency folders alike - a currency folder's
-            // images are only fetched once here, then reused for every
-            // country in its group below).
-            const imageLists = await Promise.all(folders.map(f => listImages(f).then(images => ({ name: f.name, images }))));
+            // Country folders and currency folders alike - a currency folder's
+            // images are fetched once here, then reused for every country in
+            // its group below.
+            const imagesByFolderId = await listImagesForFolders(folders);
             const imagesByFolderName = {};
-            imageLists.forEach(({ name, images }) => { imagesByFolderName[name.toUpperCase()] = images; });
+            folders.forEach(f => {
+                imagesByFolderName[f.name.toUpperCase()] = imagesByFolderId[f.id] || [];
+            });
 
             const currencyFolderNames = new Set(Object.keys(currencyGroups));
             const countries = folders
@@ -2466,7 +2905,7 @@ ${bodyHtml}
                 await showCollectionView(col, countries);
             } catch (err) {
                 console.error(err);
-                contentEl.innerHTML = `<p style="color:var(--accent-none);">Error: ${err.message || JSON.stringify(err)}</p>`;
+                contentEl.innerHTML = `<p style="color:var(--accent-none);">Error: ${escapeHtml(err.message || JSON.stringify(err))}</p>`;
             }
         }
     </script>
