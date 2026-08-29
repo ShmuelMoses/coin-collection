@@ -60,13 +60,14 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'status', 'content', 'signin-btn', 'login-box', 'login-version', 'app-version',
     'collection-view', 'cv-sidebar', 'cv-title', 'cv-controls-row', 'icon-row',
     'back-btn', 'view-toggle-btn', 'color-mode-btn', 'color-mode-dot', 'color-mode-label',
-    'reset-btn', 'export-btn', 'search-box', 'search-ghost', 'cv-main', 'map', 'list-view',
+    'reset-btn', 'export-btn', 'info-btn', 'info-facts', 'search-box', 'search-ghost',
+    'cv-main', 'map', 'list-view',
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
     'share-icon-btn', 'share-confirm-icon-btn', 'share-cancel-icon-btn',
     'enlarge-overlay', 'enlarge-img',
     'cache-modal-backdrop', 'cache-modal', 'cache-modal-stats', 'cache-modal-actions',
-    'cache-clear-btn', 'cache-close-btn',
+    'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
 ].forEach(id => mkEl(id));
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
@@ -94,8 +95,12 @@ global.getComputedStyle = () => ({ getPropertyValue: name => ({
 }[name] || '') });
 
 const listeners = {};
+const popstateHandlers = [];
 global.window = {
-    addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); },
+    addEventListener: (t, fn) => {
+        (listeners[t] ||= []).push(fn);
+        if (t === 'popstate') popstateHandlers.push(fn);
+    },
     removeEventListener: () => {},
 };
 global.history = { pushState() {}, back() {} };
@@ -198,9 +203,20 @@ const GEOJSON = { type: 'FeatureCollection', features: [
       geometry: { type: 'Polygon', coordinates: [[[30,45],[180,45],[180,75],[30,75],[30,45]]] } },
     { properties: { name: 'Costa Rica', 'ISO3166-1-Alpha-3': 'CRI' },
       geometry: { type: 'Polygon', coordinates: [[[-86,8],[-82,8],[-82,11],[-86,11],[-86,8]]] } },
-    // A micro-state: previously dropped from the map entirely unless owned.
+    // Micro-states: previously dropped from the map entirely unless owned.
     { properties: { name: 'Malta', 'ISO3166-1-Alpha-3': 'MLT' },
       geometry: { type: 'Polygon', coordinates: [[[14.18,35.79],[14.57,35.79],[14.57,36.08],[14.18,36.08],[14.18,35.79]]] } },
+    { properties: { name: 'Monaco', 'ISO3166-1-Alpha-3': 'MCO' },
+      geometry: { type: 'Polygon', coordinates: [[[7.40,43.72],[7.44,43.72],[7.44,43.75],[7.40,43.75],[7.40,43.72]]] } },
+    // No ISO code, but a real place referenced by the EUR currency group.
+    { properties: { name: 'Kosovo', 'ISO3166-1-Alpha-3': '-99' },
+      geometry: { type: 'Polygon', coordinates: [[[20,42],[22,42],[22,43],[20,43],[20,42]]] } },
+    // No ISO code and not a country - must be dropped, not collapsed into a
+    // shared "-99" entry along with Kosovo.
+    { properties: { name: 'Scarborough Reef', 'ISO3166-1-Alpha-3': '-99' },
+      geometry: { type: 'Polygon', coordinates: [[[117.7,15.1],[117.8,15.1],[117.8,15.2],[117.7,15.2],[117.7,15.1]]] } },
+    { properties: { name: 'Bir Tawil', 'ISO3166-1-Alpha-3': '-99' },
+      geometry: { type: 'Polygon', coordinates: [[[33,21],[34,21],[34,22],[33,22],[33,21]]] } },
     { properties: { name: 'Antarctica', 'ISO3166-1-Alpha-3': 'ATA' },
       geometry: { type: 'Polygon', coordinates: [[[-180,-90],[180,-90],[180,-60],[-180,-60],[-180,-90]]] } },
 ]};
@@ -236,9 +252,10 @@ try {
 
 console.log('\nPalette + version');
 check('colours came from the CSS variables', cfg.OWNED_COLOR === '#4b6b3a', cfg.OWNED_COLOR);
-check('version written into both elements',
-    byId.get('login-version').textContent === cfg.APP_VERSION &&
-    byId.get('app-version').textContent === cfg.APP_VERSION);
+check('version written into the login screen', byId.get('login-version').textContent === cfg.APP_VERSION);
+check('names table now covers the EUR group',
+    ['MCO','SMR','KSV','MNE','VAT','AND','MLT'].every(c => !!countries.COUNTRY_NAMES[c]),
+    ['MCO','SMR','KSV','MNE'].map(c => c+'='+countries.COUNTRY_NAMES[c]).join(' '));
 
 console.log('\nCosta Rica code fix');
 check('CRI has a name', countries.COUNTRY_NAMES['CRI'] === 'Costa Rica');
@@ -265,10 +282,16 @@ check('shared note counted once overall', countries.uniqueImageCount(state.state
 await map.initMap();
 check('Antarctica excluded', !state.state.countryLayers['ATA']);
 check('normal countries drawn', !!state.state.countryLayers['FRA'] && !!state.state.countryLayers['RUS']);
-check('D-06: Malta now on the map even though it is not owned',
-    !!state.state.countryLayers['MLT'], 'micro-states used to be dropped entirely');
-check('D-06: Malta drawn as a marker, not a polygon',
-    state.state.countryLayers['MLT'][0].kind === 'marker');
+check('micro-states are on the map even when not owned',
+    !!state.state.countryLayers['MLT'] && !!state.state.countryLayers['MCO'],
+    'these used to be dropped entirely');
+check('micro-states are real polygons, not markers',
+    state.state.countryLayers['MLT'][0].kind === 'poly' && added.markers === 0);
+check('Kosovo resolves to KSV (its EUR-group code) despite having no ISO code',
+    !!state.state.countryLayers['KSV']);
+check('code-less junk features are dropped, not merged into one "-99" entry',
+    !state.state.countryLayers['-99'] && !state.state.countryLayers['null'],
+    JSON.stringify(Object.keys(state.state.countryLayers)));
 check('frame drew parallels and meridians', added.polylines > 10, String(added.polylines));
 
 console.log('\nGrid geometry (regression)');
@@ -313,6 +336,24 @@ state.state.searchQuery = 'fran';
 map.applyFilters();
 check('an unaffected country keeps its original tooltip object',
     state.state.countryLayers['RUS'][0]._tooltip === before);
+
+console.log('\nNavigation (popstate)');
+{
+    const modal = await import('./js/modal.js');
+    const backs = [];
+    global.history = { pushState() {}, back() { backs.push(1); popstateHandlers.forEach(fn => fn({})); } };
+    // Pretend a country modal is open, then close it the way a backdrop click
+    // does. It must consume exactly ONE history entry and must NOT fall through
+    // to "go back to the collections list".
+    byId.get('modal').style.display = 'block';
+    byId.get('collection-view').style.display = 'flex';
+    modal.closeModal(false);
+    check('closing the modal pops one entry, not two', backs.length === 1, String(backs.length));
+    check('it did not fall through to the collections screen',
+        byId.get('collection-view').style.display === 'flex',
+        'collection view was torn down - this was the double-pop bug');
+    check('the suppress flag is cleared again', state.state.suppressNextPopstate === false);
+}
 
 console.log('\nCurrency merge (regression)');
 const groups = drive.parseCurrencyGroups('# comment\nEUR: FRA, DEU\n\nbad line\n');

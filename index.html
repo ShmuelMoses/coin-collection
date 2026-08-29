@@ -111,7 +111,7 @@
            block stacking) purely so `order` can put them in a different
            visual order on phones (see the media query below) without
            needing separate/duplicated markup: the title, the version
-           number, and the controls row (icon buttons + search box). */
+           info button, and the controls row (icon buttons + search box). */
         #cv-sidebar {
             position: absolute; top: 20px; left: 20px; z-index: 500;
             width: 230px; max-height: calc(100vh - 40px); overflow-y: auto;
@@ -121,23 +121,23 @@
             display: flex; flex-direction: column;
         }
         #cv-title { order: 1; font-size: 24px; margin: 0 0 16px 0; color: var(--accent-owned); text-align: center; }
-        /* This is a real <button> (it opens the cache panel, so it must be
-           focusable and announced as a control) - the width/padding/font
-           resets undo the global `button` rule so it still looks like the
-           plain caption it was as a <div>. */
-        #app-version {
-            order: 3; text-align: center; font-size: 10px; color: var(--text-dim);
-            opacity: 0.6; margin-top: 8px; cursor: pointer;
-            width: auto; padding: 0; background: none; border: none;
-            font-family: inherit; display: block;
+        /* Replaces the old version-number caption. Same slot in the sidebar,
+           but it now opens a panel with everything about the open collection,
+           not just the thumbnail cache. */
+        #info-btn {
+            order: 3; margin: 8px auto 0 auto; cursor: pointer;
+            width: 26px; height: 26px; padding: 0; background: none;
+            border: 1px solid var(--border); border-radius: 50%;
+            color: var(--text-dim); opacity: 0.75;
+            display: flex; align-items: center; justify-content: center;
         }
-        #app-version:hover { opacity: 1; }
+        #info-btn:hover { opacity: 1; color: var(--accent-owned); border-color: var(--accent-owned); }
         #cv-controls-row { order: 2; }
         .app-version { text-align: center; font-size: 10px; color: var(--text-dim); opacity: 0.6; margin-top: 16px; }
 
         /* Phones: sidebar becomes a compact bar across the TOP instead of a
            floating card, so it blocks as little of the map as possible.
-           Laid out as a 2-row grid: title + version number on row 1,
+           Laid out as a 2-row grid: title + info button on row 1,
            the icon buttons + search box together on row 2. */
         @media (max-width: 700px) {
             #collection-view { flex-direction: column; }
@@ -153,7 +153,7 @@
                 padding: 8px 10px;
             }
             #cv-title { grid-area: title; font-size: 28px; font-weight: 700; margin: 0; text-align: left; }
-            #app-version { grid-area: version; margin-top: 0; }
+            #info-btn { grid-area: version; margin: 0 0 0 auto; }
             #cv-controls-row {
                 grid-area: controls; display: flex; align-items: center; gap: 6px;
             }
@@ -334,6 +334,22 @@
         #cache-modal-stats { font-size: 13px; color: var(--text-dim); margin: 0 0 18px 0; line-height: 1.6; }
         #cache-modal-actions { display: flex; gap: 8px; }
         #cache-modal-actions .legend-btn { justify-content: center; margin-bottom: 0; }
+        #cache-modal { text-align: left; width: 300px; }
+        #cache-modal h3 { text-align: center; }
+        #info-facts { margin: 0 0 16px 0; font-size: 13px; line-height: 1.5; }
+        #info-facts dt {
+            font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--text-dim); margin-top: 10px;
+        }
+        #info-facts dt:first-child { margin-top: 0; }
+        #info-facts dd { margin: 1px 0 0 0; color: var(--text); }
+        .info-section {
+            font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+            color: var(--text-dim); font-weight: normal;
+            margin: 18px 0 6px 0; padding-top: 12px; border-top: 1px solid var(--border);
+        }
+        .info-action { justify-content: center; gap: 8px; margin-bottom: 0; }
+        #cache-modal-stats { text-align: left; }
 
         /* ===== Themed dialogs (replacing alert/confirm/prompt) ===== */
         /* Built on demand by js/dialog.js - the native browser dialogs were
@@ -380,7 +396,9 @@
     <div id="collection-view" style="display:none;">
         <div id="cv-sidebar">
             <h1 id="cv-title"></h1>
-            <button id="app-version" title="Thumbnail cache info" aria-label="Thumbnail cache info"></button>
+            <button id="info-btn" title="About this collection" aria-label="About this collection">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9.5"/><line x1="12" y1="7" x2="12" y2="13.5"/><line x1="12" y1="17" x2="12" y2="17"/></svg>
+            </button>
             <div id="cv-controls-row">
                 <div id="icon-row">
                     <button id="back-btn" class="icon-btn" title="Back to My Collections" aria-label="Back to My Collections">
@@ -399,9 +417,6 @@
                     </button>
                     <button id="reset-btn" class="icon-btn" title="Reset view" aria-label="Reset view">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
-                    </button>
-                    <button id="export-btn" class="icon-btn" title="Export whole collection" aria-label="Export whole collection">
-                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     </button>
                 </div>
                 <div class="search-wrap">
@@ -457,8 +472,14 @@
              getDriveThumbIndex), so this is the only way to actually see
              what's cached: click the version number to open it. -->
         <div id="cache-modal-backdrop"></div>
-        <div id="cache-modal">
-            <h3>Thumbnail cache</h3>
+        <div id="cache-modal" role="dialog" aria-modal="true" aria-labelledby="info-modal-title">
+            <h3 id="info-modal-title">About</h3>
+            <dl id="info-facts"></dl>
+            <button id="export-btn" class="legend-btn info-action">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>Share whole collection</span>
+            </button>
+            <h4 class="info-section">Thumbnail cache</h4>
             <p id="cache-modal-stats">Loading…</p>
             <div id="cache-modal-actions">
                 <button id="cache-clear-btn" class="legend-btn">Clear cache</button>

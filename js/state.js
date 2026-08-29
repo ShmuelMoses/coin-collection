@@ -25,6 +25,12 @@ export const state = {
     labelShownCodes: new Set(),
     // Countries currently painted as coloured rather than muted.
     shownCodes: new Set(),
+    // Set just before a programmatic history.back(), so the popstate handler
+    // knows that navigation was already dealt with. Without it, closing the
+    // modal pops TWO screens: closeModal hides the modal and calls
+    // history.back(), the handler then runs, sees no modal open any more, and
+    // "goes back" again - landing on the collections list.
+    suppressNextPopstate: false,
 };
 
 export function resetCollectionState() {

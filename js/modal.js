@@ -332,6 +332,8 @@ export function closeModal(fromPopstate) {
     document.getElementById('cv-main').classList.remove('dimmed');
     releaseModalObjectUrls(); // these belong to the modal that just closed
     if (!fromPopstate) {
+        // The handler must not treat this as a second "go back".
+        state.suppressNextPopstate = true;
         history.back(); // consumes the 'modal' state pushed when it opened
     }
 }

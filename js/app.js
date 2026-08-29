@@ -5,10 +5,10 @@ import {
     API_KEY, APP_VERSION, TRANSITION_MS
 } from './config.js';
 import { initAuth, promptSignIn, trySilentSignIn, clearToken, getAccessToken } from './auth.js';
-import { loadCollections, saveCollections, fetchCollectionData } from './drive.js';
+import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } from './drive.js';
 import { getDriveThumbIndex, clearDriveThumbCache, lastThumbUploadError, releaseModalObjectUrls } from './cache.js';
 import { state, resetCollectionState } from './state.js';
-import { COUNTRY_NAMES, buildCountryMap, countryTotalCount } from './countries.js';
+import { COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount } from './countries.js';
 import { loadLayouts } from './layouts.js';
 import { initModal, closeModal, isModalOpen } from './modal.js';
 import { renderList } from './list.js';
@@ -24,10 +24,10 @@ const contentEl = document.getElementById('content');
 const setStatus = msg => { statusEl.textContent = msg; };
 
 document.getElementById('login-version').textContent = APP_VERSION;
-document.getElementById('app-version').textContent = APP_VERSION;
 
 let collectionsState = { fileId: null, collections: [] };
 let currentCollection = null;
+let currentFolderInfo = null; // {createdTime} for the open collection
 let signedOutShown = false;
 
 // ---------- boot ----------
@@ -204,7 +204,16 @@ async function openCollection(col) {
     getDriveThumbIndex(); // warm up, don't await
 
     try {
-        const countries = await fetchCollectionData(col.id);
+        // Folder metadata is fetched alongside the contents (not awaited
+        // separately) purely so the info panel can show a creation date.
+        const [countries, folderInfo] = await Promise.all([
+            fetchCollectionData(col.id),
+            getFolderInfo(col.id).catch(err => {
+                console.warn('Could not read folder metadata:', err);
+                return null;
+            })
+        ]);
+        currentFolderInfo = folderInfo;
         setStatus('');
         await showCollectionView(col, countries);
     } catch (err) {
@@ -247,16 +256,21 @@ function goBackToCollections(fromPopstate) {
     releaseModalObjectUrls();
     resetCollectionState();
     currentCollection = null;
+    currentFolderInfo = null;
     document.getElementById('collection-view').style.display = 'none';
     document.getElementById('login-box').style.display = 'block';
     contentEl.innerHTML = '<p>Loading your collections...</p>';
     showCollectionsScreen();
-    if (!fromPopstate) history.back();
+    if (!fromPopstate) {
+        state.suppressNextPopstate = true;
+        history.back();
+    }
 }
 
 // Makes the phone's back gesture close a modal or step back to the collections
 // list first, instead of leaving the site immediately.
 window.addEventListener('popstate', () => {
+    if (state.suppressNextPopstate) { state.suppressNextPopstate = false; return; }
     if (isModalOpen()) {
         closeModal(true);
     } else if (document.getElementById('collection-view').style.display === 'flex') {
@@ -362,12 +376,12 @@ function initControls() {
         fitFrameToViewport();
     };
 
-    document.getElementById('export-btn').onclick = exportWholeCollection;
 }
 
 // ---------- whole-collection export ----------
 async function exportWholeCollection() {
     if (!currentCollection) return;
+    closeCacheModal(); // it is launched from the info panel
     const countryCount = Object.keys(state.collectionData).length;
     if (countryCount === 0) {
         await alertDialog('There is nothing to export yet.');
@@ -399,10 +413,39 @@ async function exportWholeCollection() {
     }
 }
 
-// ---------- thumbnail cache panel ----------
-async function openCacheModal() {
+// ---------- info panel ----------
+// Opened by the "!" button in the sidebar, which replaced the version-number
+// caption. Everything about the open collection lives here: version, which
+// collection it is, when its Drive folder was created, the whole-collection
+// share, and the thumbnail-cache stats that used to be all this panel showed.
+function fact(dl, label, value) {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const dd = document.createElement('dd');
+    dd.textContent = value;
+    dl.append(dt, dd);
+}
+
+async function openInfoModal() {
     document.getElementById('cache-modal-backdrop').style.display = 'block';
     document.getElementById('cache-modal').style.display = 'block';
+
+    const facts = document.getElementById('info-facts');
+    facts.innerHTML = '';
+    fact(facts, 'Version', APP_VERSION);
+    if (currentCollection) {
+        fact(facts, 'Collection', currentCollection.name);
+        const created = currentFolderInfo && currentFolderInfo.createdTime;
+        fact(facts, 'Created', created
+            ? new Date(created).toLocaleDateString(undefined,
+                { year: 'numeric', month: 'long', day: 'numeric' })
+            : 'unknown');
+        const countryCount = Object.keys(state.collectionData).length;
+        fact(facts, 'Contents', `${uniqueImageCount(state.cvCountryMap)} items in ${countryCount} ` +
+            `countr${countryCount === 1 ? 'y' : 'ies'}`);
+    }
+    document.getElementById('export-btn').style.display = currentCollection ? 'flex' : 'none';
+
     const statsEl = document.getElementById('cache-modal-stats');
     statsEl.textContent = 'Loading…';
     try {
@@ -427,9 +470,10 @@ function closeCacheModal() {
     document.getElementById('cache-modal').style.display = 'none';
 }
 
-document.getElementById('app-version').onclick = openCacheModal;
+document.getElementById('info-btn').onclick = openInfoModal;
 document.getElementById('cache-modal-backdrop').onclick = closeCacheModal;
 document.getElementById('cache-close-btn').onclick = closeCacheModal;
+document.getElementById('export-btn').onclick = exportWholeCollection;
 document.getElementById('cache-clear-btn').onclick = async () => {
     const ok = await confirmDialog(
         "Delete all cached thumbnails from Drive? They'll be regenerated automatically the next time each photo is viewed.",

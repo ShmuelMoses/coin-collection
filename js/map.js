@@ -3,7 +3,7 @@
 import { MUTED_COLOR, BORDER_COLOR, styleFor, REVEAL_MS } from './config.js';
 import { state, passesFilters, matchesQuery, isOwned } from './state.js';
 import {
-    getGeoFeatures, getCodeForFeature, isTinyTerritory, featureCenter,
+    getGeoFeatures, getCodeForFeature,
     buildMapFrame, FRAME_BOUNDS, COMPASS_BOUNDS
 } from './geo.js';
 import { canonicalCode } from './countries.js';
@@ -188,31 +188,17 @@ export async function initMap() {
         }
     }
 
-    const polygonFeatures = [];
-    const tinyFeatures = [];
-    features.forEach(f => (isTinyTerritory(f) ? tinyFeatures : polygonFeatures).push(f));
-
-    L.geoJSON({ type: 'FeatureCollection', features: polygonFeatures }, {
+    // Every country is one polygon layer, at any size. There is no longer a
+    // minimum-area threshold and no separate marker path: the micro-states are
+    // drawn like everything else, so they are present in "None yet", in the
+    // list, and in the world total. At world zoom the smallest are sub-pixel -
+    // zoom in, or search for one by name, and it is there.
+    L.geoJSON({ type: 'FeatureCollection', features }, {
         style: { weight: 0.6, color: BORDER_COLOR, fillColor: MUTED_COLOR, fillOpacity: 0.1 },
         onEachFeature: (feature, layer) => {
             register(canonicalCode(getCodeForFeature(feature)), feature.properties['name'], layer);
         }
     }).addTo(leafletMap);
-
-    // Territories whose outline is smaller than a pixel at world zoom get a
-    // fixed-size dot instead. They used to be dropped from the map entirely
-    // unless you owned them, so the map could never show you a country you were
-    // still missing - Malta, Singapore, Bahrain and most of the micro-states
-    // simply did not exist in "None yet" view.
-    tinyFeatures.forEach(feature => {
-        const code = canonicalCode(getCodeForFeature(feature));
-        if (!code) return;
-        const marker = L.circleMarker(featureCenter(feature.geometry), {
-            radius: 4, weight: 1, color: BORDER_COLOR,
-            fillColor: MUTED_COLOR, fillOpacity: 0.1
-        }).addTo(leafletMap);
-        register(code, feature.properties['name'], marker);
-    });
 
     buildMapFrame().addTo(leafletMap);
 

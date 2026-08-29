@@ -4,12 +4,24 @@
 import { FRAME_COLOR, FRAME_LIGHT_COLOR } from './config.js';
 
 // ---------- feature identity and filtering ----------
-const NAME_TO_CODE_OVERRIDE = { 'France': 'FRA', 'Norway': 'NOR', 'Somaliland': 'SLD' };
+// countries.geojson stores "-99" for anything without a real ISO code. Most of
+// those are not places you can collect from - reefs, sand banks, ice fields,
+// military bases - but a few are, so they get an explicit code here. Without
+// this they ALL resolved to the same "-99" key and collided into a single
+// bogus map entry, which also produced one junk row in the list view.
+const NAME_TO_CODE_OVERRIDE = {
+    'France': 'FRA',
+    'Norway': 'NOR',
+    'Somaliland': 'SLD',
+    'Kosovo': 'KSV',           // referenced by the EUR group in multi_country_currencies
+    'Northern Cyprus': 'CYN',
+};
 
 export function getCodeForFeature(feature) {
     const rawCode = feature.properties['ISO3166-1-Alpha-3'];
     const name = feature.properties['name'];
-    return (rawCode && rawCode !== '-99') ? rawCode : (NAME_TO_CODE_OVERRIDE[name] || rawCode);
+    if (rawCode && rawCode !== '-99') return rawCode;
+    return NAME_TO_CODE_OVERRIDE[name] || null;
 }
 
 export function bboxArea(geometry) {
@@ -24,34 +36,16 @@ export function bboxArea(geometry) {
     return (maxLat - minLat) * (maxLng - minLng);
 }
 
-// Territories smaller than this are drawn as a marker rather than a polygon -
-// at world zoom their outline is smaller than a single pixel. They used to be
-// dropped entirely unless owned, which meant the map could never show you a
-// country you DIDN'T have yet (Malta, Singapore, Bahrain and most of the
-// micro-states), defeating the point of the "None yet" view.
-export const MIN_POLYGON_AREA = 0.3;
-
-// Antarctica is excluded outright: nothing is ever collected there and its
-// huge, mostly-empty landmass forces every other view further out.
+// EVERY country is drawn, at any size. There used to be a minimum-area
+// threshold that hid ~17 micro-states unless you already owned them, so the
+// map could never show you a country you were still missing - Malta,
+// Singapore, Monaco, San Marino, the Caribbean states and so on simply did not
+// exist in "None yet" view. The only things filtered now are Antarctica
+// (nothing is ever collected there, and it eats the whole southern view) and
+// features with no usable country code.
 export function featureFilter(feature) {
-    return feature.properties['name'] !== 'Antarctica';
-}
-
-export function isTinyTerritory(feature) {
-    return bboxArea(feature.geometry) < MIN_POLYGON_AREA;
-}
-
-// Centre point for a tiny territory's marker.
-export function featureCenter(geometry) {
-    let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
-    (function walk(coords) {
-        if (typeof coords[0] === 'number') {
-            const [lng, lat] = coords;
-            if (lat < minLat) minLat = lat; if (lat > maxLat) maxLat = lat;
-            if (lng < minLng) minLng = lng; if (lng > maxLng) maxLng = lng;
-        } else { coords.forEach(walk); }
-    })(geometry.coordinates);
-    return [(minLat + maxLat) / 2, (minLng + maxLng) / 2];
+    if (feature.properties['name'] === 'Antarctica') return false;
+    return !!getCodeForFeature(feature);
 }
 
 // ---------- the boundaries file ----------

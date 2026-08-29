@@ -111,6 +111,16 @@ export async function readCurrencyGroups(rootFolderId) {
     }
 }
 
+// Metadata for the collection's own root folder - used by the info panel to
+// show when the collection was created. createdTime comes from Drive, so it
+// works for collections added before this field was ever displayed.
+export async function getFolderInfo(folderId) {
+    const resp = await withAuth(() => gapi.client.drive.files.get({
+        fileId: folderId, fields: 'id, name, createdTime'
+    }));
+    return resp.result;
+}
+
 // ---------- listing a collection's images ----------
 // Lists the images in MANY folders using a handful of requests instead of one
 // per folder. Drive accepts several "'id' in parents" clauses in a single

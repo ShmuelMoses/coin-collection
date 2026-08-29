@@ -15,9 +15,9 @@ export const COLLECTIONS_FILENAME = 'collections.json';
 export const LAYOUTS_FILENAME = 'layouts.json';
 export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
-// Single source of truth for the version - written into both places that show
-// it (the login box and the sidebar) at startup by app.js.
-export const APP_VERSION = '2.08';
+// Single source of truth for the version: written into the login screen at
+// startup, and shown in the info panel behind the sidebar's "!" button.
+export const APP_VERSION = '2.09';
 
 // Leaflet styles its layers from JavaScript, so these have to exist as JS
 // values - but they are READ FROM the :root custom properties rather than
