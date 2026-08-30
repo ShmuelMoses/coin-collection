@@ -19,6 +19,18 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 // startup, and shown in the info panel behind the sidebar's "!" button.
 export const APP_VERSION = '2.15';
 
+// How long boot waits for Google before giving up and offering offline mode.
+// One mutable object so the cadence is in a single visible place, and so the
+// tests can shorten it. Every one of these is a bound on the delay before the
+// user is offered a way forward, which is why none of them is generous: the
+// page must never sit on "Loading..." because a request neither arrived nor
+// failed, which is what a phone on a wifi with no route out actually does.
+export const BOOT_TIMEOUTS = {
+    existingScriptWait: 3500, // for the <script> tags already in index.html
+    retryScriptWait: 4500,    // for the replacements appended after those
+    googleReady: 20000,       // whole setup, including the Drive discovery load
+};
+
 // Leaflet styles its layers from JavaScript, so these have to exist as JS
 // values - but they are READ FROM the :root custom properties rather than
 // written out a second time. Two hand-maintained copies of the palette is

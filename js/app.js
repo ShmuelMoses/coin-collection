@@ -2,7 +2,7 @@
 // control wiring.
 
 import {
-    API_KEY, APP_VERSION, TRANSITION_MS
+    API_KEY, APP_VERSION, TRANSITION_MS, BOOT_TIMEOUTS
 } from './config.js';
 import { initAuth, promptSignIn, trySilentSignIn, clearToken, getAccessToken, isAuthReady } from './auth.js';
 import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } from './drive.js';
@@ -62,15 +62,53 @@ function loadScript(src) {
     });
 }
 
+function waitFor(predicate, ms) {
+    return new Promise(resolve => {
+        if (predicate()) return resolve(true);
+        const started = Date.now();
+        const t = setInterval(() => {
+            if (predicate()) { clearInterval(t); resolve(true); }
+            else if (Date.now() - started >= ms) { clearInterval(t); resolve(false); }
+        }, 100);
+    });
+}
+
 async function ensureGoogleScripts() {
     if (googleScriptsPresent()) return;
-    await Promise.all([
+    // The tags in index.html are async, so on a slow connection they may simply
+    // not have run yet - give them a bounded moment before replacing them.
+    if (await waitFor(googleScriptsPresent, BOOT_TIMEOUTS.existingScriptWait)) return;
+
+    [
         (typeof gapi === 'undefined' || typeof gapi.load !== 'function')
-            ? loadScript('https://apis.google.com/js/api.js') : null,
+            ? 'https://apis.google.com/js/api.js' : null,
         (typeof google === 'undefined' || !(google.accounts && google.accounts.oauth2))
-            ? loadScript('https://accounts.google.com/gsi/client') : null,
-    ].filter(Boolean));
-    if (!googleScriptsPresent()) throw new Error("Google's sign-in scripts could not be loaded.");
+            ? 'https://accounts.google.com/gsi/client' : null,
+    ].filter(Boolean).forEach(src => {
+        loadScript(src).catch(err => console.warn(String(err)));
+    });
+
+    // Waiting on the GLOBALS rather than on the load events: a request that
+    // hangs instead of failing (the usual shape of a phone on a wifi with no
+    // route out) never fires either event, and waiting on it is what left the
+    // page stuck with no offline option at all.
+    if (!await waitFor(googleScriptsPresent, BOOT_TIMEOUTS.retryScriptWait)) {
+        throw new Error("Google's sign-in scripts could not be loaded.");
+    }
+}
+
+// Nothing in the setup below may hang. gapi.client.init and the discovery
+// document load are ordinary network calls with no timeout of their own, so on
+// a connection that stalls they never settle - and an unsettled promise there
+// means the offline option is never offered at all.
+function withDeadline(promise, ms, label) {
+    let timer;
+    return Promise.race([
+        promise.finally(() => clearTimeout(timer)),
+        new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(label)), ms);
+        })
+    ]);
 }
 
 // One-time Google client setup: scripts, the Drive discovery document, and the
@@ -83,7 +121,7 @@ async function ensureGoogleScripts() {
 let googleReadyPromise = null;
 function ensureGoogleReady() {
     if (googleReadyPromise) return googleReadyPromise;
-    googleReadyPromise = (async () => {
+    googleReadyPromise = withDeadline((async () => {
         await ensureGoogleScripts();
         await new Promise((resolve, reject) => {
             const t = setTimeout(() => reject(new Error('Google API loader did not respond')), 20000);
@@ -94,12 +132,16 @@ function ensureGoogleReady() {
         if (!isAuthReady()) {
             initAuth({ onSignIn: startSignedInSession, onExpired: reportSignedOut });
         }
-    })();
+    })(), BOOT_TIMEOUTS.googleReady, 'Google could not be reached in time.');
     googleReadyPromise.catch(() => { googleReadyPromise = null; });
     return googleReadyPromise;
 }
 
+let booted = false;
 async function boot() {
+    if (booted) return;
+    booted = true;
+
     startConnectivityMonitor();
     onConnectivityChange(handleConnectivityChange);
 
@@ -109,8 +151,10 @@ async function boot() {
     // session the button did nothing at all when pressed.
     if (btn) btn.onclick = () => attemptSignIn();
 
+    setStatus('Connecting to Google…');
     try {
         await ensureGoogleReady();
+        setStatus('');
         if (btn) { btn.disabled = false; btn.textContent = 'Sign in with Google'; }
         // Try a silent sign-in first: if access was granted before and the
         // Google session is still live, this logs back in with no click.
@@ -122,6 +166,21 @@ async function boot() {
             : "Google's sign-in could not be reached.");
     }
 }
+
+// NOT window.onload. The load event waits for every subresource, Google's two
+// <script> tags included - and a request that hangs rather than fails (a phone
+// on a wifi with no route out, which is the normal Android shape of "no
+// internet") delays it indefinitely. boot() then never ran at all, so the page
+// sat on a disabled "Loading..." button with no offline option, which is
+// exactly what Android was doing. This module is deferred, so the DOM is
+// already parsed by the time it runs and there is nothing left to wait for.
+if (typeof document !== 'undefined' && document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+    boot();
+}
+// Kept only as a belt-and-braces fallback; the guard above makes it a no-op in
+// the normal case.
 window.onload = boot;
 
 // ---------- connectivity ----------
@@ -176,9 +235,11 @@ async function offerOfflineMode(reason) {
         btn.textContent = 'Sign in with Google';
         btn.onclick = () => attemptSignIn();
     }
-    // boot() can reach this more than once now (a failed attempt, then a
-    // retry), and the note/button below would otherwise stack up.
-    const stale = document.getElementById('login-offline-note');
+    // This can now be reached more than once (a failed attempt, then a retry
+    // after the connection changes). The note and the button are therefore one
+    // REPLACEABLE block: the previous version removed only the note, so a
+    // second attempt left two "Continue without signing in" buttons stacked up.
+    const stale = document.getElementById('login-offline-block');
     if (stale) stale.remove();
 
     if (!snap) {
@@ -186,6 +247,9 @@ async function offerOfflineMode(reason) {
                   'open your collection once while connected.');
         return;
     }
+
+    const block = document.createElement('div');
+    block.id = 'login-offline-block';
 
     const note = document.createElement('p');
     note.id = 'login-offline-note';
@@ -199,8 +263,9 @@ async function offerOfflineMode(reason) {
     offlineBtn.onclick = () => enterOfflineMode(snap.value);
 
     setStatus('');
-    contentEl.appendChild(note);
-    contentEl.appendChild(offlineBtn);
+    block.appendChild(note);
+    block.appendChild(offlineBtn);
+    contentEl.appendChild(block);
 }
 
 async function enterOfflineMode(collections) {
@@ -352,22 +417,38 @@ let signInInFlight = false;
 async function attemptSignIn() {
     if (signInInFlight) return;
     signInInFlight = true;
-    // Don't trust a stale flag for something the user just asked for.
-    await checkNow();
+    let failure = null;
     try {
+        // Don't trust a stale flag for something the user just asked for.
+        await checkNow();
         if (!state.online) {
-            await alertDialog('There is still no internet connection, so Google cannot be reached.',
-                'Cannot sign in');
-            return;
+            failure = new Error('There is still no internet connection, so Google cannot be reached.');
+            failure.plainMessage = true; // already says everything; don't wrap it
+        } else {
+            await ensureGoogleReady();
+            promptSignIn();
         }
-        await ensureGoogleReady();
-        promptSignIn();
     } catch (err) {
         console.error('Sign-in could not start:', err);
-        await alertDialog(describeError(err, 'Google could not be reached'), 'Cannot sign in');
+        failure = err;
     } finally {
+        // Released BEFORE the message below. The flag exists to stop two OAuth
+        // popups being launched at once, not to lock the button while a dialog
+        // the user has to dismiss is on screen.
         signInInFlight = false;
     }
+    if (!failure) return;
+
+    // Put the offline option back in front of the user FIRST, so it is already
+    // there when the message is dismissed rather than leaving them with a
+    // dialog and no way forward. offerOfflineMode replaces the whole block, so
+    // pressing Sign in repeatedly cannot stack up copies of it.
+    if (document.getElementById('login-box').style.display !== 'none') {
+        await offerOfflineMode('Google could not be reached.');
+    }
+    await alertDialog(
+        failure.plainMessage ? failure.message : describeError(failure, 'Google could not be reached'),
+        'Cannot sign in');
 }
 
 function addNewCollection() {

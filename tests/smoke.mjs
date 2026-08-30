@@ -37,11 +37,19 @@ class El {
     get innerHTML() { return this._html; }
     set innerHTML(v) { this._html = String(v); this.children = []; }
     setAttribute(k, v) { this._attrs[k] = String(v); if (k === 'id') this.id = v; }
+    get id() { return this._id || ''; }
+    // Elements the app CREATES can also be looked up by id, and can go away
+    // again - offerOfflineMode replaces its block that way.
+    set id(v) { this._id = v; if (v) dynamicById.set(v, this); }
     getAttribute(k) { return this._attrs[k] ?? null; }
     removeAttribute(k) { delete this._attrs[k]; }
     appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
     append(...cs) { cs.forEach(c => this.appendChild(c)); }
-    remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(x => x !== this); }
+    remove() {
+        if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(x => x !== this);
+        this.parentNode = null;
+        if (this._id && dynamicById.get(this._id) === this) dynamicById.delete(this._id);
+    }
     addEventListener(t, fn) { (this._listeners[t] ||= []).push(fn); }
     removeEventListener() {}
     dispatch(t, ev) { (this._listeners[t] || []).forEach(fn => fn(ev || {})); if (this['on' + t]) this['on' + t](ev || {}); }
@@ -53,6 +61,7 @@ class El {
 }
 
 const byId = new Map();
+const dynamicById = new Map();
 function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); return e; }
 
 // Every id index.html defines that app code looks up.
@@ -74,6 +83,9 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
 
+// Ids created by the app rather than declared in index.html.
+const RUNTIME_IDS = new Set(['login-offline-block', 'login-offline-note']);
+
 const documentElement = new El('html');
 const body = new El('body');
 
@@ -84,16 +96,25 @@ global.document = {
     body,
     hidden: false,
     getElementById: id => {
-        const el = byId.get(id);
-        if (!el) { throw new Error(`getElementById('${id}') returned null - that id is not in index.html`); }
-        return el;
+        const el = byId.get(id) || dynamicById.get(id);
+        if (el) return el;
+        // Ids the app creates at runtime legitimately come and go, so a miss on
+        // one of those is null (as in a browser). A miss on an id that index.html
+        // is supposed to define is a typo, and still fails loudly.
+        if (RUNTIME_IDS.has(id)) return null;
+        throw new Error(`getElementById('${id}') returned null - that id is not in index.html`);
     },
     createElement: tag => new El(tag),
     createDocumentFragment: () => new El('fragment'),
     createTextNode: t => { const e = new El('#text'); e.textContent = String(t); return e; },
     querySelectorAll: () => [],
-    addEventListener: () => {},
+    // boot() now hangs off DOMContentLoaded rather than window.onload, so the
+    // harness has to be able to fire it.
+    readyState: 'loading',
+    _listeners: {},
+    addEventListener: (t, fn) => { (global.document._listeners[t] ||= []).push(fn); },
     removeEventListener: () => {},
+    dispatch: t => { (global.document._listeners[t] || []).forEach(fn => fn({})); },
 };
 global.getComputedStyle = () => ({ getPropertyValue: name => ({
     '--accent-owned': '#4b6b3a', '--accent-none': '#a13d2b', '--muted': '#a89a78',
@@ -631,29 +652,73 @@ console.log('\nOffline mode');
     layouts.resetLayouts();
 }
 
+console.log('\nBoot with Google unreachable');
+{
+    const cache = await import('./js/cache.js');
+    const cfg2 = await import('./js/config.js');
+    // Shortened so this runs in milliseconds; what is under test is that boot
+    // GIVES UP and offers a way forward, not how long it waits first.
+    cfg2.BOOT_TIMEOUTS.existingScriptWait = 20;
+    cfg2.BOOT_TIMEOUTS.retryScriptWait = 20;
+
+    // Something saved from a previous online session, so offline mode has
+    // content to offer.
+    await cache.saveSnapshot(cache.SNAP.collections, [{ id: 'c1', name: 'Saved' }]);
+
+    const savedGoogle = global.google;
+    delete global.google;   // Google's scripts never arrived
+
+    // It must NOT be waiting on window.onload: that event waits for Google's
+    // <script> tags, and a request that hangs rather than fails delays it
+    // forever - which is why Android sat on a disabled "Loading..." button
+    // with no offline option at all.
+    check('boot does not wait for window.onload (the Android hang)',
+        (global.document._listeners['DOMContentLoaded'] || []).length === 1,
+        'nothing is listening for DOMContentLoaded, so boot depends on every ' +
+        'subresource arriving - including the ones that never do');
+
+    global.document.dispatch('DOMContentLoaded');
+    await new Promise(r => setTimeout(r, 300));
+
+    const blocks = () => byId.get('content').children.filter(c => c.id === 'login-offline-block');
+    check('the offline option is offered when Google cannot be reached',
+        blocks().length === 1, 'blocks: ' + blocks().length);
+
+    // Pressing Sign in fails again and re-offers. The note used to be replaced
+    // but the button was not, so a second attempt left TWO "Continue without
+    // signing in" buttons stacked up - which is what the screenshot showed.
+    byId.get('signin-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 300));
+    check('a second failed attempt does not stack up a second offline option',
+        blocks().length === 1, 'blocks: ' + blocks().length);
+    check('and the one that remains still has its note and its button',
+        blocks()[0] && blocks()[0].children.length === 2,
+        JSON.stringify((blocks()[0] || { children: [] }).children.map(c => c.textContent.slice(0, 20))));
+
+    global.google = savedGoogle;
+    cfg2.BOOT_TIMEOUTS.existingScriptWait = 3500;
+    cfg2.BOOT_TIMEOUTS.retryScriptWait = 4500;
+}
+
 console.log('\nSigning in actually starts a sign-in (item 1)');
 {
     const auth = await import('./js/auth.js');
-    // boot() is what wires the login screen up; window.onload is never fired
-    // for us here, so call it the way the browser would.
-    await global.window.onload();
-    await new Promise(r => setTimeout(r, 30));
+    // Google is reachable again: the sign-in button must now genuinely reach it
+    // without the page being reloaded.
+    byId.get('signin-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 200));
 
     const btn = byId.get('signin-btn');
     check('the sign-in button has a click handler at all',
         typeof btn.onclick === 'function',
         'the button had NO handler: pressing it did nothing whenever the silent sign-in found no session');
-    check('the token client was set up, so a press can reach Google',
+    check('the token client is set up once Google is reachable, with no reload',
         auth.isAuthReady(),
         'initAuth ran only on the online boot path, so offline the button pressed a null client');
-
-    let asked = false;
-    const prevGoogle = global.google.accounts.oauth2.initTokenClient;
     check('promptSignIn refuses clearly instead of throwing a TypeError', (() => {
-        try { auth.promptSignIn(); asked = true; return true; }
+        try { auth.promptSignIn(); return true; }
         catch (e) { return /not been set up/.test(e.message); }
-    })(), 'asked=' + asked);
-    global.google.accounts.oauth2.initTokenClient = prevGoogle;
+    })());
 }
 
 console.log('\nConnectivity monitoring (items 3 and 4)');
