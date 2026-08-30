@@ -18,18 +18,40 @@ let pendingTokenResolve = null; // set only while a refresh is in flight
 let refreshInFlight = null;
 let onFirstSignIn = null;       // called once, when a NEW sign-in succeeds
 let onSignedOut = null;         // called when a silent refresh genuinely fails
+let onSignInError = null;       // called when the sign-in window never opened
 
 export function getAccessToken() { return accessToken; }
 
-export function initAuth({ onSignIn, onExpired }) {
+export function initAuth({ onSignIn, onExpired, onError }) {
     onFirstSignIn = onSignIn;
     onSignedOut = onExpired;
+    onSignInError = onError;
     tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
         callback: handleTokenResponse,
+        // Without this, a sign-in window the browser refuses to open (the usual
+        // cause: requestAccessToken was called after an await, so it is no
+        // longer inside the click that asked for it) fails in complete silence -
+        // no callback, no error, nothing on screen. That is what "pressing sign
+        // in does nothing" was.
+        error_callback: handleTokenError,
     });
     return tokenClient;
+}
+
+function handleTokenError(err) {
+    const type = (err && err.type) || 'unknown';
+    console.warn('Google sign-in did not complete:', type, err);
+    // A window the user closed themselves is not a fault worth reporting.
+    if (type === 'popup_closed') return;
+    if (pendingTokenResolve) {
+        const resolve = pendingTokenResolve;
+        pendingTokenResolve = null;
+        resolve(false);
+        return;
+    }
+    if (onSignInError) onSignInError(type);
 }
 
 // True once initAuth has run. Offline, it never had: initAuth was reached only

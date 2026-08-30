@@ -123,14 +123,24 @@ function ensureGoogleReady() {
     if (googleReadyPromise) return googleReadyPromise;
     googleReadyPromise = withDeadline((async () => {
         await ensureGoogleScripts();
+        // gapi.load fetches more code of its own, so it stalls on a dead
+        // connection exactly like the script tags do. Its bound was 20s, which
+        // is where most of the half-minute before the offline option appeared
+        // was actually going: the two script tags were served from the browser
+        // cache, so the wait above passed instantly and everything piled up here.
         await new Promise((resolve, reject) => {
-            const t = setTimeout(() => reject(new Error('Google API loader did not respond')), 20000);
+            const t = setTimeout(() => reject(new Error('Google API loader did not respond')),
+                BOOT_TIMEOUTS.gapiLoad);
             gapi.load('client:picker', () => { clearTimeout(t); resolve(); });
         });
         await gapi.client.init({ apiKey: API_KEY });
         await gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest');
         if (!isAuthReady()) {
-            initAuth({ onSignIn: startSignedInSession, onExpired: reportSignedOut });
+            initAuth({
+                onSignIn: startSignedInSession,
+                onExpired: reportSignedOut,
+                onError: reportSignInError,
+            });
         }
     })(), BOOT_TIMEOUTS.googleReady, 'Google could not be reached in time.');
     googleReadyPromise.catch(() => { googleReadyPromise = null; });
@@ -150,6 +160,18 @@ async function boot() {
     // silent attempt below succeeding, so whenever there was no live Google
     // session the button did nothing at all when pressed.
     if (btn) btn.onclick = () => attemptSignIn();
+
+    // Ask the network first. Every Google step below stalls rather than fails
+    // when there is no route out, so with no connection this used to spend the
+    // whole chain of timeouts - about half a minute - before offering the
+    // offline option. This answers in milliseconds when the device knows it is
+    // offline, and within a few seconds otherwise.
+    setStatus('Checking your connection…');
+    await checkNow();
+    if (!state.online) {
+        await offerOfflineMode('You appear to be offline.');
+        return;
+    }
 
     setStatus('Connecting to Google…');
     try {
@@ -318,6 +340,17 @@ async function startSignedInSession() {
     }
 }
 
+// Google reports here when the sign-in window never opened at all. It used to
+// report nowhere: the failure was completely silent, which is what pressing
+// Sign in and having nothing happen actually looked like.
+function reportSignInError(type) {
+    const message = type === 'popup_failed_to_open'
+        ? 'Your browser blocked the Google sign-in window. Allow pop-ups for this ' +
+          'site and press Sign in again.'
+        : 'The Google sign-in window did not finish. Please try again.';
+    alertDialog(message, 'Sign-in did not complete');
+}
+
 // Reached only when a silent refresh genuinely fails - revoked access, offline,
 // or a consent screen still in "Testing" mode, where Google expires the grant
 // after 7 days no matter what the app does.
@@ -414,8 +447,31 @@ async function showCollectionsScreen(opts) {
 // Google's client is still missing (including the two <script> tags themselves,
 // if the page was opened with no connection) and only then asks for a token.
 let signInInFlight = false;
-async function attemptSignIn() {
+// Google's requestAccessToken opens a window, and a browser only allows that
+// while it still considers itself inside the click that asked for it. EVERY
+// await before it spends that gesture - a connectivity check is enough - and
+// the window is then blocked silently: no callback, no error, nothing happens.
+// That is why signing in from the info panel failed once the connection came
+// back, while the same code worked at startup (where the silent path uses an
+// iframe rather than a window).
+//
+// So when Google is already set up, the call is made SYNCHRONOUSLY inside the
+// click. Everything slow is done ahead of time instead: boot does it, and so
+// does the connectivity monitor the moment the connection returns.
+function attemptSignIn() {
     if (signInInFlight) return;
+    if (isAuthReady() && state.online) {
+        try {
+            promptSignIn();
+            return;
+        } catch (err) {
+            console.warn('Sign-in could not start:', err);
+        }
+    }
+    prepareThenSignIn();
+}
+
+async function prepareThenSignIn() {
     signInInFlight = true;
     let failure = null;
     try {
@@ -432,9 +488,9 @@ async function attemptSignIn() {
         console.error('Sign-in could not start:', err);
         failure = err;
     } finally {
-        // Released BEFORE the message below. The flag exists to stop two OAuth
-        // popups being launched at once, not to lock the button while a dialog
-        // the user has to dismiss is on screen.
+        // Released BEFORE the message below. The flag exists to stop two
+        // sign-in windows being launched at once, not to lock the button while
+        // a dialog the user has to dismiss is on screen.
         signInInFlight = false;
     }
     if (!failure) return;

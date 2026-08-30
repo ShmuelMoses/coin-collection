@@ -157,6 +157,9 @@
             }
             .legend-btn { font-size: 11px; padding: 6px 8px; margin-bottom: 0; width: auto; }
             .box { max-width: 92vw; padding: 24px 20px; }
+            /* There is no room for it beside the message on a phone, and it is
+               redundant: the same button is in the info panel. */
+            #offline-banner-btn { display: none !important; }
         }
         .search-wrap { position: relative; margin-bottom: 16px; }
         #search-box, #search-ghost {

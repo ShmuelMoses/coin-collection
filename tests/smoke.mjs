@@ -296,12 +296,18 @@ global.gapi = {
 };
 // The token client hands back a token immediately, so withAuth() proceeds to
 // the actual request instead of waiting on a refresh that never arrives.
+let tokenRequests = 0;      // how many times a sign-in window was asked for
+let lastTokenCfg = null;    // the config initAuth built the client with
 global.google = {
-    accounts: { oauth2: { initTokenClient: (cfg) => ({
-        requestAccessToken() {
-            setTimeout(() => cfg.callback({ access_token: 'test-token', expires_in: 3600 }), 0);
-        }
-    }) } },
+    accounts: { oauth2: { initTokenClient: (cfg) => {
+        lastTokenCfg = cfg;
+        return {
+            requestAccessToken() {
+                tokenRequests++;
+                setTimeout(() => cfg.callback({ access_token: 'test-token', expires_in: 3600 }), 0);
+            }
+        };
+    } } },
     picker: { PickerBuilder: class {}, DocsView: class {}, ViewId: {}, Action: {} },
 };
 
@@ -652,6 +658,41 @@ console.log('\nOffline mode');
     layouts.resetLayouts();
 }
 
+console.log('\nBoot with no connection is fast (item 2)');
+{
+    const cache = await import('./js/cache.js');
+    const cfg2 = await import('./js/config.js');
+    await cache.saveSnapshot(cache.SNAP.collections, [{ id: 'c1', name: 'Saved' }]);
+
+    // Every Google step STALLS rather than fails when there is no route out, so
+    // leaving them to time out is what put half a minute between opening the app
+    // and being offered the offline copy. Made obvious here: the Google waits are
+    // left long, and boot still has to finish quickly by asking the network first.
+    cfg2.BOOT_TIMEOUTS.existingScriptWait = 4000;
+    cfg2.BOOT_TIMEOUTS.retryScriptWait = 4000;
+    cfg2.BOOT_TIMEOUTS.gapiLoad = 4000;
+    cfg2.BOOT_TIMEOUTS.googleReady = 4000;
+
+    const savedGoogle = global.google;
+    delete global.google;
+    probeOnline = false;               // no connection
+    global.navigator.onLine = true;    // ...but the device does not know it
+
+    const started = Date.now();
+    global.document.dispatch('DOMContentLoaded');
+    await new Promise(r => setTimeout(r, 600));
+    const took = Date.now() - started;
+
+    const blocks = () => byId.get('content').children.filter(c => c.id === 'login-offline-block');
+    check('with no connection the offline option appears at once, not after ' +
+          'every Google timeout has expired',
+        blocks().length === 1 && took < 2000, `blocks=${blocks().length} after ${took}ms`);
+
+    global.google = savedGoogle;
+    probeOnline = true;
+    await (await import('./js/net.js')).checkNow();
+}
+
 console.log('\nBoot with Google unreachable');
 {
     const cache = await import('./js/cache.js');
@@ -677,8 +718,9 @@ console.log('\nBoot with Google unreachable');
         'nothing is listening for DOMContentLoaded, so boot depends on every ' +
         'subresource arriving - including the ones that never do');
 
-    global.document.dispatch('DOMContentLoaded');
-    await new Promise(r => setTimeout(r, 300));
+    // The connection is fine here; it is Google that cannot be reached.
+    byId.get('signin-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 400));
 
     const blocks = () => byId.get('content').children.filter(c => c.id === 'login-offline-block');
     check('the offline option is offered when Google cannot be reached',
@@ -719,6 +761,37 @@ console.log('\nSigning in actually starts a sign-in (item 1)');
         try { auth.promptSignIn(); return true; }
         catch (e) { return /not been set up/.test(e.message); }
     })());
+}
+
+console.log('\nSigning in keeps the user gesture (item 3)');
+{
+    const fs = await import('node:fs');
+
+    // requestAccessToken opens a window, and a browser only allows that while it
+    // still considers itself inside the click that asked for it. ANY await first
+    // - even a connectivity check - spends the gesture and the window is blocked
+    // in silence. So this is checked SYNCHRONOUSLY, immediately after the click:
+    // if the call only happens on a later tick, the count has not moved yet.
+    const before = tokenRequests;
+    byId.get('info-signin-btn').dispatch('click');
+    check('the sign-in window is asked for inside the click itself',
+        tokenRequests === before + 1,
+        'requestAccessToken was only reached after an await, so the browser no ' +
+        'longer treats it as a user gesture and blocks the window silently');
+    await new Promise(r => setTimeout(r, 50));
+
+    check('a sign-in window that never opens is reported, not swallowed',
+        lastTokenCfg && typeof lastTokenCfg.error_callback === 'function',
+        'without error_callback a blocked window produces no callback, no error ' +
+        'and nothing on screen');
+
+    // On a phone there is no room for it beside the message, and the same
+    // button is already in the info panel.
+    const html = fs.readFileSync('./index.html', 'utf8');
+    const mobile = html.slice(html.indexOf('@media (max-width: 700px)'));
+    check('the banner sign-in button is hidden on phones (item 4)',
+        /#offline-banner-btn\s*\{[^}]*display:\s*none/.test(mobile.slice(0, mobile.indexOf('\n        }'))),
+        'it squeezes the offline message on a narrow screen');
 }
 
 console.log('\nConnectivity monitoring (items 3 and 4)');

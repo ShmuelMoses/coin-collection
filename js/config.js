@@ -17,7 +17,7 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
 // Single source of truth for the version: written into the login screen at
 // startup, and shown in the info panel behind the sidebar's "!" button.
-export const APP_VERSION = '2.15';
+export const APP_VERSION = '2.16';
 
 // How long boot waits for Google before giving up and offering offline mode.
 // One mutable object so the cadence is in a single visible place, and so the
@@ -26,9 +26,10 @@ export const APP_VERSION = '2.15';
 // page must never sit on "Loading..." because a request neither arrived nor
 // failed, which is what a phone on a wifi with no route out actually does.
 export const BOOT_TIMEOUTS = {
-    existingScriptWait: 3500, // for the <script> tags already in index.html
-    retryScriptWait: 4500,    // for the replacements appended after those
-    googleReady: 20000,       // whole setup, including the Drive discovery load
+    existingScriptWait: 2500, // for the <script> tags already in index.html
+    retryScriptWait: 3500,    // for the replacements appended after those
+    gapiLoad: 6000,           // gapi.load('client:picker'), which fetches more code
+    googleReady: 12000,       // whole setup, including the Drive discovery load
 };
 
 // Leaflet styles its layers from JavaScript, so these have to exist as JS
