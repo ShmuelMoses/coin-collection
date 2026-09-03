@@ -22,6 +22,10 @@ function ensureBackdrop() {
     return backdropEl;
 }
 
+// Keyboard shortcuts must not fire behind a dialog: Escape and Enter belong to
+// the dialog, and pressing R there should not reset the map underneath it.
+export function isDialogOpen() { return closeActive !== null; }
+
 function onKeyDown(e) {
     if (!closeActive) return;
     if (e.key === 'Escape') { e.preventDefault(); closeActive(null); }

@@ -53,6 +53,7 @@ class El {
     addEventListener(t, fn) { (this._listeners[t] ||= []).push(fn); }
     removeEventListener() {}
     dispatch(t, ev) { (this._listeners[t] || []).forEach(fn => fn(ev || {})); if (this['on' + t]) this['on' + t](ev || {}); }
+    click() { this.dispatch('click'); }
     querySelectorAll() { return []; }
     focus() {}
     select() {}
@@ -79,6 +80,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
     'info-collection', 'info-app', 'info-errors', 'delete-collection-btn',
     'offline-banner', 'info-signin-btn', 'offline-banner-text', 'offline-banner-btn',
+    'folder-help-btn', 'info-shortcuts', 'info-keys-heading',
 ].forEach(id => mkEl(id));
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
@@ -116,6 +118,7 @@ global.document = {
     removeEventListener: () => {},
     dispatch: t => { (global.document._listeners[t] || []).forEach(fn => fn({})); },
 };
+global.matchMedia = q => ({ matches: /hover: hover/.test(String(q)), media: String(q) });
 global.getComputedStyle = () => ({ getPropertyValue: name => ({
     '--accent-owned': '#4b6b3a', '--accent-none': '#a13d2b', '--muted': '#a89a78',
     '--map-border': 'rgba(59,42,26,0.45)', '--frame': '#5a3d22', '--frame-light': '#e8dcbb',
@@ -575,6 +578,98 @@ console.log('\nThe map fills in all at once, not country by country');
     check('and they all reach full colour',
         allLayers.every(l => l._style.fillOpacity === 0.65),
         JSON.stringify([...new Set(allLayers.map(l => l._style.fillOpacity))]));
+}
+
+console.log('\nReset, shortcuts, tooltips and duplicate folders');
+{
+    const fs = await import('node:fs');
+    const html = fs.readFileSync('./index.html', 'utf8');
+    const appjs = fs.readFileSync('./js/app.js', 'utf8');
+
+    // --- 1. Reset puts the item-type button back too ---
+    state.state.itemType = 'coin';
+    state.state.colorMode = 'none';
+    state.state.searchQuery = 'fra';
+    byId.get('reset-btn').dispatch('click');
+    check('Reset returns the banknotes/coins button to showing both',
+        state.state.itemType === 'both',
+        'it stayed on ' + state.state.itemType);
+    check('Reset still clears the colour mode and the search',
+        state.state.colorMode === 'both' && state.state.searchQuery === '');
+
+    // --- 2. No system-chrome tooltips or scrollbars ---
+    check('no button uses the browser\'s own white title="" tooltip',
+        !/<button[^>]*\stitle=/.test(html),
+        'a title="" tooltip is system chrome and ignores the palette');
+    check('every icon button still has a hover hint',
+        (html.match(/data-tip="/g) || []).length >= 12,
+        String((html.match(/data-tip="/g) || []).length));
+    check('the hint is drawn from the palette, not by the browser',
+        /\[data-tip\]::after/.test(html) && /background: var\(--panel-alt\)/.test(html));
+    check('the hint is suppressed on touch, where :hover can stick after a tap',
+        /@media \(hover: hover\) and \(pointer: fine\)[\s\S]{0,200}\[data-tip\]/.test(html));
+    check('scrollbars are themed rather than left as system chrome',
+        /scrollbar-color: var\(--muted\)/.test(html) &&
+        /::-webkit-scrollbar-thumb/.test(html));
+    check('the info panel was widened so it needs one far less often',
+        /#cache-modal \{ text-align: left; width: 420px/.test(html), 'still 310px');
+
+    // --- 3/4. Shortcuts: one table drives keys, hints and the help list ---
+    const keys = ['i', 'v', 'c', 't', 'r', 'b', '/'];
+    check('every planned shortcut is defined once, in one table',
+        keys.every(k => new RegExp(`key: '\\\\${k === '/' ? '/' : k}'`).test(appjs) ||
+                        new RegExp(`key: '${k}'`).test(appjs)),
+        'SHORTCUTS is missing one of ' + keys.join(' '));
+
+    byId.get('cache-modal').style.display = 'none';
+    byId.get('collection-view').style.display = 'flex';
+    const press = key => (listeners['keydown'] || []).forEach(fn =>
+        fn({ key, target: { tagName: 'DIV' }, preventDefault() {} }));
+
+    state.state.itemType = 'both';
+    press('t');
+    check('T switches banknotes / coins / both', state.state.itemType === 'banknote',
+        state.state.itemType);
+    press('v');
+    check('V switches map / list view', state.state.currentView === 'list');
+    press('v');
+    press('r');
+    check('R resets, so T is undone again', state.state.itemType === 'both');
+
+    // A key pressed into the search box must reach the search box.
+    state.state.currentView = 'map';
+    const before = state.state.itemType;
+    (listeners['keydown'] || []).forEach(fn =>
+        fn({ key: 't', target: { tagName: 'INPUT', id: 'search-box' }, preventDefault() {} }));
+    check('typing "t" in the search box does not switch the item type',
+        state.state.itemType === before, 'the shortcut stole a keystroke from typing');
+
+    // --- 4. The info panel documents them, from the same table ---
+    byId.get('info-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 40));
+    const rows = byId.get('info-shortcuts').children;
+    check('the info panel lists every shortcut there is',
+        rows.filter(r => r.children.length === 2).length === keys.length,
+        `${rows.length} rows for ${keys.length} shortcuts`);
+    check('the panel is showing them because this is a device with a keyboard',
+        byId.get('info-keys-heading').style.display === 'block');
+    byId.get('cache-close-btn').dispatch('click');
+
+    // --- 5. The folder-structure explainer ---
+    check('there is a button for the folder layout, any time',
+        typeof byId.get('folder-help-btn').onclick === 'function');
+    check('the explainer says what the folder name\'s case means',
+        /ALL CAPS \(ISR\) = banknotes/.test(appjs) && /all lowercase \(isr\) = coins/.test(appjs));
+    check('and it is shown by itself the first time a collection is opened',
+        /maybeShowFolderHelp\(col\.id\)/.test(appjs) &&
+        /seen:folderhelp:/.test(appjs));
+
+    // --- 6. Two collections on one Drive folder ---
+    check('removing a collection removes THAT ROW, not every row sharing its folder',
+        /i !== currentCollectionIndex/.test(appjs),
+        'filtering by folder id removed both entries when two pointed at one folder');
+    check('and adding a second entry for the same folder says what will be shared',
+        /already points at this same Drive folder/.test(appjs));
 }
 
 console.log('\nNavigation (popstate)');

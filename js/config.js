@@ -17,7 +17,7 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
 // Single source of truth for the version: written into the login screen at
 // startup, and shown in the info panel behind the sidebar's "!" button.
-export const APP_VERSION = '2.17';
+export const APP_VERSION = '2.18';
 
 // How long boot waits for Google before giving up and offering offline mode.
 // One mutable object so the cadence is in a single visible place, and so the

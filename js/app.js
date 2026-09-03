@@ -9,7 +9,7 @@ import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } 
 import {
     getDriveThumbIndex, clearDriveThumbCache, clearLocalImageCache, localCacheStats,
     lastThumbUploadError, releaseModalObjectUrls, thumbErrors,
-    SNAP, saveSnapshot, readSnapshot
+    SNAP, saveSnapshot, readSnapshot, getMeta, setMeta
 } from './cache.js';
 import { state, resetCollectionState } from './state.js';
 import { startConnectivityMonitor, onConnectivityChange, checkNow } from './net.js';
@@ -25,7 +25,7 @@ import {
     focusOnMatches, invalidateMapSize
 } from './map.js';
 import { buildCollectionExport, shareOrDownloadFile, isExportCancelled } from './export.js';
-import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showChoiceDialog } from './dialog.js';
+import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showChoiceDialog, isDialogOpen } from './dialog.js';
 import { describeError, isNetworkError } from './util.js';
 
 const statusEl = document.getElementById('status');
@@ -36,6 +36,7 @@ document.getElementById('login-version').textContent = APP_VERSION;
 
 let collectionsState = { fileId: null, collections: [] };
 let currentCollection = null;
+let currentCollectionIndex = -1;
 let currentFolderInfo = null; // {createdTime} for the open collection
 let signedOutShown = false;
 
@@ -406,10 +407,10 @@ async function showCollectionsScreen(opts) {
         return;
     }
 
-    collections.forEach(col => {
+    collections.forEach((col, index) => {
         const item = document.createElement('div');
         item.className = 'collection-item';
-        item.onclick = () => openCollection(col);
+        item.onclick = () => openCollection(col, { index });
 
         const nameSpan = document.createElement('span');
         nameSpan.textContent = col.name;
@@ -526,6 +527,24 @@ async function pickerCallback(data) {
     if (data.action !== google.picker.Action.PICKED) return;
 
     const folder = data.docs[0];
+
+    // Two entries CAN point at the same Drive folder, and the app copes: they
+    // show the same countries and the same photos. What they also share, and
+    // cannot be given separately, is everything stored per folder - the saved
+    // categories and manual order, and the offline copy. So this is worth a
+    // word before it happens rather than a puzzle afterwards.
+    const twin = collectionsState.collections.find(c => c.id === folder.id);
+    if (twin) {
+        const go = await confirmDialog(
+            `"${twin.name}" already points at this same Drive folder.\n\n` +
+            `A second entry will show exactly the same countries and photos, and the ` +
+            `two will share their categories, their manual ordering and their offline ` +
+            `copy - those are stored per folder and cannot differ between them. ` +
+            `Only the name in the list will be different.\n\nAdd it anyway?`,
+            { title: 'Already in your list', confirmLabel: 'Add anyway' });
+        if (!go) return;
+    }
+
     const typed = await promptDialog('Name this collection:', folder.name, { title: 'New collection' });
     if (typed === null) return; // cancelled
     const displayName = typed.trim() || folder.name;
@@ -625,6 +644,7 @@ async function openCollection(col, opts) {
 }
 
 async function showCollectionView(col, countries, opts) {
+    if (opts && typeof opts.index === 'number') currentCollectionIndex = opts.index;
     // Re-opening the collection already on screen (a sign-in from offline mode
     // reloads it from Drive): tear the old map down first, and take no extra
     // history entry - the user did not navigate anywhere.
@@ -650,6 +670,8 @@ async function showCollectionView(col, countries, opts) {
     await initMap();
     renderList(); // after initMap, so countryNameLookup is populated
     if (!inPlace) history.pushState({ screen: 'collection' }, '');
+    // Not awaited: the map is already on screen behind it.
+    if (!inPlace) maybeShowFolderHelp(col.id);
 }
 
 function goBackToCollections(fromPopstate) {
@@ -657,6 +679,7 @@ function goBackToCollections(fromPopstate) {
     releaseModalObjectUrls();
     resetCollectionState();
     currentCollection = null;
+    currentCollectionIndex = -1;
     currentFolderInfo = null;
     setModalCollectionName('');
     document.getElementById('collection-view').style.display = 'none';
@@ -730,8 +753,178 @@ function renderItemTypeButton() {
     if (!btn) return;
     const mode = ITEM_TYPES.find(m => m.key === state.itemType) || ITEM_TYPES[0];
     btn.innerHTML = mode.icon;
-    btn.title = mode.label;
-    btn.setAttribute('aria-label', mode.label);
+    setTip(btn, mode.label);
+}
+
+// ---------- how the Drive folder is meant to look ----------
+// Shown once the first time each collection is opened, and available any time
+// from the info panel. Nothing about the naming scheme is discoverable from
+// inside the app, and getting it wrong is silent: a folder named "Isr" simply
+// counts as neither banknotes nor coins.
+const FOLDER_HELP = [
+    'Everything comes from the Drive folder you picked. Inside it:',
+    '',
+    '•  One folder per country, named with its 3-letter code - ISR, FRA, USA.',
+    '',
+    '•  THE CASE OF THAT NAME SAYS WHAT IS INSIDE.',
+    '   ALL CAPS (ISR) = banknotes.  all lowercase (isr) = coins.',
+    '   Both are the same country on the map; the button in the toolbar chooses',
+    '   which of them you are looking at. A name that is neither - "Isr" - is',
+    '   counted as neither, and its photos show in every mode.',
+    '',
+    '•  Photos go straight inside those folders. Nothing has to be renamed.',
+    '',
+    '•  Historical countries have their own folders and appear inside the',
+    '   modern one: SUN (USSR), CSK (Czechoslovakia), DDR, YUG, PAL, OTT.',
+    '',
+    '•  Optional: a text file named "multi_country_currencies" in the same',
+    '   folder, one group per line -  EUR: FRA, DEU, ITA, ...  - then a folder',
+    '   named EUR is filed into every country listed, so a shared note only has',
+    '   to be uploaded once. Use "eur" for the coin side of the same group.',
+].join('\n');
+
+const FOLDER_HELP_SEEN_KEY = id => 'seen:folderhelp:' + id;
+
+async function showFolderHelp() {
+    await alertDialog(FOLDER_HELP, 'How to organise the Drive folder');
+}
+
+// Deliberately not awaited by the caller: the map should finish drawing behind
+// it rather than waiting on a message.
+async function maybeShowFolderHelp(collectionId) {
+    try {
+        const seen = await getMeta(FOLDER_HELP_SEEN_KEY(collectionId));
+        if (seen) return;
+        await setMeta(FOLDER_HELP_SEEN_KEY(collectionId), { at: Date.now() });
+    } catch (err) {
+        // A broken IndexedDB must not mean the help is shown every single time.
+        console.warn('Could not record that the folder help was shown:', err);
+        return;
+    }
+    await showFolderHelp();
+}
+
+// ---------- keyboard ----------
+// One table drives all three: what each key does, what the hover hint says, and
+// what the info panel lists. Defining them separately is how a shortcut ends up
+// documented but not wired, or renamed in one place only.
+//
+// A hardware keyboard is a desktop thing, so nothing here is offered on a
+// phone - the info panel's Keyboard section is hidden there.
+const SHORTCUTS = [
+    { key: 'i', id: 'info-btn',        label: 'Collection info' },
+    { key: 'v', id: 'view-toggle-btn', label: 'Map / list view' },
+    { key: 'c', id: 'color-mode-btn',  label: 'Colouring: have / none / both' },
+    { key: 't', id: 'item-type-btn',   label: 'Type: banknotes / coins / both' },
+    { key: 'r', id: 'reset-btn',       label: 'Reset the view' },
+    { key: 'b', id: 'back-btn',        label: 'Back to My Collections' },
+    { key: '/', id: null,              label: 'Jump to the search box',
+      run: () => { const b = document.getElementById('search-box'); if (b) { b.focus(); b.select(); } } },
+];
+
+export function hasKeyboard() {
+    return typeof matchMedia === 'function' &&
+        matchMedia('(hover: hover) and (pointer: fine)').matches;
+}
+
+// Appended to each button's hover hint, so the key is discoverable without
+// having to open the info panel first.
+function tipWithKey(id, label) {
+    const sc = SHORTCUTS.find(s => s.id === id);
+    return sc ? `${label}  (${sc.key.toUpperCase()})` : label;
+}
+
+function setTip(el, label) {
+    if (!el) return;
+    el.dataset.tip = tipWithKey(el.id, label);
+    el.setAttribute('aria-label', label);
+}
+
+function collectionViewOpen() {
+    return document.getElementById('collection-view').style.display === 'flex';
+}
+
+function infoPanelOpen() {
+    return document.getElementById('cache-modal').style.display === 'block';
+}
+
+function handleShortcut(e) {
+    if (!hasKeyboard()) return;
+    // Ctrl/Alt/Cmd combinations belong to the browser, not to us.
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    // Never steal a keystroke from something being typed into, or from a
+    // dialog that owns the keyboard while it is up.
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
+        if (e.key === 'Escape' && t.id === 'search-box') t.blur();
+        return;
+    }
+    if (isDialogOpen()) return;
+    if (!collectionViewOpen()) return;
+
+    if (e.key === 'Escape') {
+        if (infoPanelOpen()) { e.preventDefault(); closeCacheModal(); }
+        return;
+    }
+    // The country window has its own controls; only the info key and Escape
+    // mean anything while it is open.
+    if (isModalOpen()) return;
+    // While the info panel is up, everything behind it is out of reach except
+    // the key that closes it again.
+    if (infoPanelOpen()) {
+        if (e.key.toLowerCase() === 'i') { e.preventDefault(); closeCacheModal(); }
+        return;
+    }
+
+    const sc = SHORTCUTS.find(s => s.key === e.key.toLowerCase());
+    if (!sc) return;
+    e.preventDefault();
+    if (sc.run) { sc.run(); return; }
+    const btn = document.getElementById(sc.id);
+    if (btn && !btn.classList.contains('offline-disabled')) btn.click();
+}
+
+function renderShortcutHelp() {
+    const dl = document.getElementById('info-shortcuts');
+    const heading = document.getElementById('info-keys-heading');
+    if (!dl || !heading) return;
+    const show = hasKeyboard();
+    dl.style.display = show ? 'block' : 'none';
+    heading.style.display = show ? 'block' : 'none';
+    if (!show) return;
+    dl.innerHTML = '';
+    SHORTCUTS.forEach(sc => {
+        const row = document.createElement('div');
+        const kbd = document.createElement('kbd');
+        kbd.textContent = sc.key === '/' ? '/' : sc.key.toUpperCase();
+        const text = document.createElement('span');
+        text.textContent = sc.label;
+        row.append(kbd, text);
+        dl.appendChild(row);
+    });
+    const note = document.createElement('div');
+    note.style.cssText = 'margin-top:8px;color:var(--text-dim);font-size:11px;display:block;';
+    note.textContent = 'Esc closes this panel. Keys are ignored while you are typing.';
+    dl.appendChild(note);
+}
+
+// Everything the controls can change, back to how the collection opens.
+// The item-type button was left out of this and stayed on banknotes (or coins)
+// after a reset, which is not "reset".
+function resetView() {
+    const searchBox = document.getElementById('search-box');
+    const searchGhost = document.getElementById('search-ghost');
+    searchBox.value = ''; searchGhost.value = '';
+    state.searchQuery = '';
+    state.clickedLabelCodes.clear();
+    state.colorMode = 'both';
+    state.itemType = 'both';
+    renderColorModeButton();
+    renderItemTypeButton();
+    rebuildCollectionData();
+    renderList();
+    applyFilters({ animate: true });
+    fitFrameToViewport();
 }
 
 function renderViewToggle() {
@@ -742,9 +935,7 @@ function renderViewToggle() {
     // The icon shows where the button will take you NEXT, not the mode you are
     // already in - so on the map it is the list icon, and vice versa.
     btn.innerHTML = showMap ? LIST_ICON_SVG : MAP_ICON_SVG;
-    const label = showMap ? 'Switch to List view' : 'Switch to Map view';
-    btn.title = label;
-    btn.setAttribute('aria-label', label);
+    setTip(btn, showMap ? 'Switch to List view' : 'Switch to Map view');
     if (showMap) invalidateMapSize();
 }
 
@@ -759,8 +950,7 @@ function renderColorModeButton() {
     const btn = document.getElementById('color-mode-btn');
     document.getElementById('color-mode-label').textContent = mode.label;
     document.getElementById('color-mode-dot').style.background = mode.color;
-    btn.title = mode.label;
-    btn.setAttribute('aria-label', mode.label);
+    setTip(btn, mode.label);
 }
 
 function initControls() {
@@ -773,6 +963,12 @@ function initControls() {
     };
 
     document.getElementById('back-btn').onclick = () => goBackToCollections(false);
+    window.addEventListener('keydown', handleShortcut);
+    // The static hints in index.html carry no key; add them from the one table.
+    SHORTCUTS.forEach(sc => {
+        const btn = sc.id && document.getElementById(sc.id);
+        if (btn && btn.dataset.tip) setTip(btn, btn.dataset.tip);
+    });
 
     document.getElementById('item-type-btn').onclick = () => {
         const idx = ITEM_TYPES.findIndex(m => m.key === state.itemType);
@@ -830,15 +1026,7 @@ function initControls() {
     };
     renderColorModeButton();
 
-    document.getElementById('reset-btn').onclick = () => {
-        searchBox.value = ''; searchGhost.value = '';
-        state.searchQuery = '';
-        state.clickedLabelCodes.clear();
-        state.colorMode = 'both';
-        renderColorModeButton();
-        applyFilters({ animate: true });
-        fitFrameToViewport();
-    };
+    document.getElementById('reset-btn').onclick = resetView;
 
 }
 
@@ -913,7 +1101,12 @@ async function removeOpenCollection() {
     );
     if (!ok) return;
 
-    const updated = collectionsState.collections.filter(c => c.id !== col.id);
+    // BY POSITION, not by folder id. Two entries are allowed to point at the
+    // same Drive folder (see the warning when one is added), and filtering on
+    // the id removed every one of them at once - so removing one duplicate
+    // silently took its twin with it.
+    const updated = collectionsState.collections.filter((c, i) =>
+        currentCollectionIndex >= 0 ? i !== currentCollectionIndex : c.id !== col.id);
     try {
         const newFileId = await saveCollections(collectionsState.fileId, updated);
         collectionsState = { fileId: newFileId, collections: updated };
@@ -1075,7 +1268,9 @@ async function openInfoModal() {
     }
     document.getElementById('export-btn').style.display = hasCollection ? 'flex' : 'none';
     document.getElementById('delete-collection-btn').style.display = hasCollection ? 'flex' : 'none';
+    document.getElementById('folder-help-btn').style.display = hasCollection ? 'flex' : 'none';
 
+    renderShortcutHelp();
     await renderAppFacts();
     renderThumbErrors();
     applyConnectionRestrictions();
@@ -1095,6 +1290,7 @@ document.getElementById('cache-modal-backdrop').onclick = closeCacheModal;
 document.getElementById('cache-close-btn').onclick = closeCacheModal;
 document.getElementById('export-btn').onclick = exportWholeCollection;
 document.getElementById('delete-collection-btn').onclick = removeOpenCollection;
+document.getElementById('folder-help-btn').onclick = () => { closeCacheModal(); showFolderHelp(); };
 document.getElementById('info-signin-btn').onclick = () => { closeCacheModal(); attemptSignIn(); };
 const bannerSignInBtn = document.getElementById('offline-banner-btn');
 if (bannerSignInBtn) bannerSignInBtn.onclick = () => attemptSignIn();
