@@ -247,8 +247,9 @@ function layerStub(kind) {
     return l;
 }
 const added = { polylines: 0, rectangles: 0, markers: 0, overlays: 0 };
+let lastMapOptions = null;
 global.L = {
-    map: () => ({
+    map: (_id, opts) => (lastMapOptions = opts, {
         setView() { return this; },
         remove() {},
         invalidateSize() {},
@@ -660,9 +661,44 @@ console.log('\nReset, shortcuts, tooltips and duplicate folders');
         typeof byId.get('folder-help-btn').onclick === 'function');
     check('the explainer says what the folder name\'s case means',
         /ALL CAPS \(ISR\) = banknotes/.test(appjs) && /all lowercase \(isr\) = coins/.test(appjs));
-    check('and it is shown by itself the first time a collection is opened',
-        /maybeShowFolderHelp\(col\.id\)/.test(appjs) &&
-        /seen:folderhelp:/.test(appjs));
+    // It has to come BEFORE the folder is chosen. Shown on first open instead,
+    // it arrives after the folder has already been made and filled - and
+    // getting the ISR / isr naming wrong is silent.
+    check('the explainer is shown when adding a collection, before the picker',
+        /async function addNewCollection\(\)[\s\S]{0,400}confirmDialog\(FOLDER_HELP[\s\S]{0,300}new google\.picker\.PickerBuilder/.test(appjs),
+        'it is not between pressing "Add new collection" and the Drive picker');
+    check('and it is no longer sprung on you when you open a collection',
+        !/maybeShowFolderHelp/.test(appjs) && !/seen:folderhelp:/.test(appjs));
+
+    // --- 2b. A Hebrew (or any) keyboard layout ---
+    // With the Hebrew layout the I key reports e.key === '\u05df'. Matching on the
+    // letter alone meant every shortcut died the moment the layout was switched.
+    byId.get('cache-modal').style.display = 'none';
+    const pressPhysical = (key, code) => (listeners['keydown'] || []).forEach(fn =>
+        fn({ key, code, target: { tagName: 'DIV' }, preventDefault() {} }));
+
+    state.state.itemType = 'both';
+    pressPhysical('\u05d0', 'KeyT');   // the T key with a Hebrew layout
+    check('a shortcut still works with a non-Latin keyboard layout',
+        state.state.itemType === 'banknote',
+        'the key reported a Hebrew letter and the shortcut was not recognised');
+    pressPhysical('\u05df', 'KeyI');   // the I key with a Hebrew layout
+    check('and so does the one that opens the info panel',
+        byId.get('cache-modal').style.display === 'block');
+    byId.get('cache-close-btn').dispatch('click');
+    byId.get('reset-btn').dispatch('click');
+
+    // The letter still counts too, for a layout whose physical arrangement
+    // differs from the letters printed on it.
+    pressPhysical('t', undefined);
+    check('the printed letter is still accepted on its own',
+        state.state.itemType === 'banknote');
+    byId.get('reset-btn').dispatch('click');
+
+    // --- 3. Leaflet's own badge ---
+    check("Leaflet's attribution badge is off - this map draws no tiles",
+        lastMapOptions && lastMapOptions.attributionControl === false,
+        'the "Leaflet" badge and its flag sit in the corner of the map');
 
     // --- 6. Two collections on one Drive folder ---
     check('removing a collection removes THAT ROW, not every row sharing its folder',

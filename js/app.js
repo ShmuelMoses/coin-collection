@@ -9,7 +9,7 @@ import { loadCollections, saveCollections, fetchCollectionData, getFolderInfo } 
 import {
     getDriveThumbIndex, clearDriveThumbCache, clearLocalImageCache, localCacheStats,
     lastThumbUploadError, releaseModalObjectUrls, thumbErrors,
-    SNAP, saveSnapshot, readSnapshot, getMeta, setMeta
+    SNAP, saveSnapshot, readSnapshot
 } from './cache.js';
 import { state, resetCollectionState } from './state.js';
 import { startConnectivityMonitor, onConnectivityChange, checkNow } from './net.js';
@@ -511,7 +511,17 @@ async function prepareThenSignIn() {
         'Cannot sign in');
 }
 
-function addNewCollection() {
+// Shown every time, immediately before the Drive picker opens - which is the
+// one moment it is actually useful. It was previously shown the first time a
+// collection was OPENED, which is too late: by then the folder has already been
+// made and filled, and getting the ISR / isr naming wrong is silent.
+async function addNewCollection() {
+    const go = await confirmDialog(FOLDER_HELP, {
+        title: 'How to organise the Drive folder',
+        confirmLabel: 'Choose folder',
+    });
+    if (!go) return;
+
     const picker = new google.picker.PickerBuilder()
         .addView(new google.picker.DocsView(google.picker.ViewId.FOLDERS)
             .setSelectFolderEnabled(true)
@@ -670,8 +680,6 @@ async function showCollectionView(col, countries, opts) {
     await initMap();
     renderList(); // after initMap, so countryNameLookup is populated
     if (!inPlace) history.pushState({ screen: 'collection' }, '');
-    // Not awaited: the map is already on screen behind it.
-    if (!inPlace) maybeShowFolderHelp(col.id);
 }
 
 function goBackToCollections(fromPopstate) {
@@ -783,25 +791,8 @@ const FOLDER_HELP = [
     '   to be uploaded once. Use "eur" for the coin side of the same group.',
 ].join('\n');
 
-const FOLDER_HELP_SEEN_KEY = id => 'seen:folderhelp:' + id;
-
 async function showFolderHelp() {
     await alertDialog(FOLDER_HELP, 'How to organise the Drive folder');
-}
-
-// Deliberately not awaited by the caller: the map should finish drawing behind
-// it rather than waiting on a message.
-async function maybeShowFolderHelp(collectionId) {
-    try {
-        const seen = await getMeta(FOLDER_HELP_SEEN_KEY(collectionId));
-        if (seen) return;
-        await setMeta(FOLDER_HELP_SEEN_KEY(collectionId), { at: Date.now() });
-    } catch (err) {
-        // A broken IndexedDB must not mean the help is shown every single time.
-        console.warn('Could not record that the folder help was shown:', err);
-        return;
-    }
-    await showFolderHelp();
 }
 
 // ---------- keyboard ----------
@@ -811,16 +802,29 @@ async function maybeShowFolderHelp(collectionId) {
 //
 // A hardware keyboard is a desktop thing, so nothing here is offered on a
 // phone - the info panel's Keyboard section is hidden there.
+// Each entry carries BOTH the letter and the physical key position. With a
+// Hebrew keyboard layout the I key reports e.key === '\u05df', not 'i', so
+// matching on the letter alone meant every shortcut stopped working the moment
+// the layout was switched. e.code is the position on the keyboard and is the
+// same whatever language is selected; the letter is still accepted as well, so
+// a layout whose physical arrangement differs (AZERTY, Dvorak) keeps working
+// from the letter the user can actually see printed on the key.
 const SHORTCUTS = [
-    { key: 'i', id: 'info-btn',        label: 'Collection info' },
-    { key: 'v', id: 'view-toggle-btn', label: 'Map / list view' },
-    { key: 'c', id: 'color-mode-btn',  label: 'Colouring: have / none / both' },
-    { key: 't', id: 'item-type-btn',   label: 'Type: banknotes / coins / both' },
-    { key: 'r', id: 'reset-btn',       label: 'Reset the view' },
-    { key: 'b', id: 'back-btn',        label: 'Back to My Collections' },
-    { key: '/', id: null,              label: 'Jump to the search box',
+    { key: 'i', code: 'KeyI',  id: 'info-btn',        label: 'Collection info' },
+    { key: 'v', code: 'KeyV',  id: 'view-toggle-btn', label: 'Map / list view' },
+    { key: 'c', code: 'KeyC',  id: 'color-mode-btn',  label: 'Colouring: have / none / both' },
+    { key: 't', code: 'KeyT',  id: 'item-type-btn',   label: 'Type: banknotes / coins / both' },
+    { key: 'r', code: 'KeyR',  id: 'reset-btn',       label: 'Reset the view' },
+    { key: 'b', code: 'KeyB',  id: 'back-btn',        label: 'Back to My Collections' },
+    { key: '/', code: 'Slash', id: null,              label: 'Jump to the search box',
       run: () => { const b = document.getElementById('search-box'); if (b) { b.focus(); b.select(); } } },
 ];
+
+// True when this key press means that shortcut, by either route.
+function shortcutMatches(sc, e) {
+    if (e.code && sc.code && e.code === sc.code) return true;
+    return typeof e.key === 'string' && e.key.toLowerCase() === sc.key;
+}
 
 export function hasKeyboard() {
     return typeof matchMedia === 'function' &&
@@ -872,11 +876,11 @@ function handleShortcut(e) {
     // While the info panel is up, everything behind it is out of reach except
     // the key that closes it again.
     if (infoPanelOpen()) {
-        if (e.key.toLowerCase() === 'i') { e.preventDefault(); closeCacheModal(); }
+        if (shortcutMatches(SHORTCUTS[0], e)) { e.preventDefault(); closeCacheModal(); }
         return;
     }
 
-    const sc = SHORTCUTS.find(s => s.key === e.key.toLowerCase());
+    const sc = SHORTCUTS.find(entry => shortcutMatches(entry, e));
     if (!sc) return;
     e.preventDefault();
     if (sc.run) { sc.run(); return; }

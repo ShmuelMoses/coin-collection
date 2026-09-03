@@ -241,7 +241,16 @@ export async function initMap() {
         worldCopyJump: false,
         maxBounds: [[-90, -169], [90, 191]],
         maxBoundsViscosity: 1.0,
-        zoomControl: false
+        zoomControl: false,
+        // Leaflet's own badge in the bottom-right corner ("Leaflet", with a
+        // Ukrainian flag since 1.9). It exists to credit map-TILE providers,
+        // and this map uses no tiles at all - every country is drawn from the
+        // GeoJSON file in this repo - so there is nothing there to credit, and
+        // a flag in the corner of an antique map is simply out of place.
+        // Leaflet's BSD-2 licence asks for the copyright notice to be kept in
+        // the source, which it is (see the comment on the script tag in
+        // index.html and the header of leaflet.js), not on screen.
+        attributionControl: false
     }).setView([20, 10], 2);
 
     const features = await getGeoFeatures();
