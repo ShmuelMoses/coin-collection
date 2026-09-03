@@ -2,6 +2,7 @@
 
 import { withAuth, driveFetch } from './auth.js';
 import { COLLECTIONS_FILENAME, MULTI_CURRENCY_CONFIG_FILENAME } from './config.js';
+import { folderKind, KIND_COIN } from './countries.js';
 
 // ---------- appData JSON files ----------
 // One writer for both collections.json and layouts.json. Each used to
@@ -171,27 +172,51 @@ export async function listImagesForFolders(folders) {
 
 // Folds each currency group's shared images into every country that uses it.
 // Pure, so it can be tested without Drive.
+// A country now has up to two folders - "ISR" for banknotes and "isr" for
+// coins - so a currency pool does too, and each must fold into its own kind:
+// notes from "EUR" into the note folders, coins from "eur" into the coin ones.
+// Entries are therefore keyed by CODE AND KIND. Keying by uppercase code alone
+// (as this did) would have merged the two halves of every country into one.
 export function mergeCurrencyGroups(countries, currencyGroups, imagesByFolderName, folderNames) {
-    const countryByCode = {};
-    countries.forEach(c => { countryByCode[c.code.toUpperCase()] = c; });
+    const keyOf = (code, kind) => code.toUpperCase() + '|' + kind;
+    const countryByKey = {};
+    countries.forEach(c => {
+        c.kind = c.kind || folderKind(c.code);
+        countryByKey[keyOf(c.code, c.kind)] = c;
+    });
 
     Object.entries(currencyGroups).forEach(([currency, codes]) => {
-        const sharedImages = imagesByFolderName[currency] || [];
-        if (!sharedImages.length) {
+        // Every case-variant folder for this currency, each with its own kind.
+        const pools = Object.entries(imagesByFolderName)
+            .filter(([name]) => name.toUpperCase() === currency)
+            .map(([name, images]) => ({ name, kind: folderKind(name), images }))
+            .filter(p => p.images.length);
+
+        if (!pools.length) {
             console.log(`[currency config] "${currency}" group (${codes.join(', ')}) has no matching folder ` +
                 `(or an empty one) among: ${(folderNames || []).join(', ') || '(no folders at all)'} - skipped.`);
             return;
         }
-        console.log(`[currency config] "${currency}": folding ${sharedImages.length} shared image(s) into ${codes.length} countries.`);
-        codes.forEach(code => {
-            let entry = countryByCode[code];
-            if (!entry) {
-                entry = { code, images: [] };
-                countries.push(entry);
-                countryByCode[code] = entry;
-            }
-            const existingIds = new Set(entry.images.map(img => img.id));
-            sharedImages.forEach(img => { if (!existingIds.has(img.id)) entry.images.push(img); });
+        pools.forEach(pool => {
+            console.log(`[currency config] "${pool.name}" (${pool.kind}): folding ${pool.images.length} ` +
+                `shared image(s) into ${codes.length} countries.`);
+            codes.forEach(code => {
+                const key = keyOf(code, pool.kind);
+                let entry = countryByKey[key];
+                if (!entry) {
+                    // Named to match its kind, so anything reading the folder
+                    // name back still sees a consistent story.
+                    entry = {
+                        code: pool.kind === KIND_COIN ? code.toLowerCase() : code.toUpperCase(),
+                        kind: pool.kind,
+                        images: []
+                    };
+                    countries.push(entry);
+                    countryByKey[key] = entry;
+                }
+                const existingIds = new Set(entry.images.map(img => img.id));
+                pool.images.forEach(img => { if (!existingIds.has(img.id)) entry.images.push(img); });
+            });
         });
     });
     return countries;
@@ -211,15 +236,22 @@ export async function fetchCollectionData(rootFolderId) {
     // Country folders and currency folders alike - a currency folder's images
     // are fetched once here, then reused for every country in its group.
     const imagesByFolderId = await listImagesForFolders(folders);
+    // Keyed by the folder's name AS WRITTEN, not upper-cased: "ISR" and "isr"
+    // are two different folders holding two different things, and folding them
+    // onto one key silently threw one of them away.
     const imagesByFolderName = {};
     folders.forEach(f => {
-        imagesByFolderName[f.name.toUpperCase()] = imagesByFolderId[f.id] || [];
+        imagesByFolderName[f.name] = imagesByFolderId[f.id] || [];
     });
 
     const currencyFolderNames = new Set(Object.keys(currencyGroups));
     const countries = folders
         .filter(f => !currencyFolderNames.has(f.name.toUpperCase()))
-        .map(f => ({ code: f.name, images: (imagesByFolderName[f.name.toUpperCase()] || []).slice() }));
+        .map(f => ({
+            code: f.name,
+            kind: folderKind(f.name),
+            images: (imagesByFolderName[f.name] || []).slice()
+        }));
 
     return mergeCurrencyGroups(countries, currencyGroups, imagesByFolderName,
                                folders.map(f => f.name));

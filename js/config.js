@@ -17,7 +17,7 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
 // Single source of truth for the version: written into the login screen at
 // startup, and shown in the info panel behind the sidebar's "!" button.
-export const APP_VERSION = '2.16';
+export const APP_VERSION = '2.17';
 
 // How long boot waits for Google before giving up and offering offline mode.
 // One mutable object so the cadence is in a single visible place, and so the
@@ -53,6 +53,8 @@ export const styleFor = (shown, isOwned) => shown
     ? { fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
     : { fillColor: MUTED_COLOR, fillOpacity: 0.18 };
 
-// Animation lengths for the staggered colour reveal.
-export const REVEAL_MS = 5000;     // initial load / Reset view
-export const TRANSITION_MS = 3000; // switching the colour-mode button
+// How long the colour cross-fade takes. Every country now fades AT ONCE rather
+// than one after another, so these are the time to full saturation for the
+// whole map - a little shorter than the old staggered reveal took to finish.
+export const REVEAL_MS = 4000;     // initial load / Reset view
+export const TRANSITION_MS = 2400; // switching the colour-mode or item-type button

@@ -16,6 +16,12 @@ export const state = {
     countryLayers: {},      // code -> [Leaflet layers]
     countryNameLookup: {},  // code -> English name, for every country on the map
     colorMode: 'both',      // 'owned' | 'none' | 'both'
+    // Which kind of item the whole view is about: 'both' | 'banknote' | 'coin'.
+    // It decides what the country modal lists, what the counts say, and - the
+    // point of it - what "owned" MEANS: with 'banknote' selected, a country you
+    // only have coins from is not owned, so it is painted red like any other
+    // country you have nothing from. One you have both from is always green.
+    itemType: 'both',
     currentView: 'map',     // 'map' | 'list'
     searchQuery: '',
     // Countries whose name label is pinned on because they were clicked.
@@ -25,6 +31,11 @@ export const state = {
     labelShownCodes: new Set(),
     // Countries currently painted as coloured rather than muted.
     shownCodes: new Set(),
+    // Countries currently painted with the OWNED colour. Tracked alongside
+    // shownCodes because switching between banknotes and coins changes which
+    // colour a country should be without changing whether it is shown at all -
+    // and a repaint that only looks at shownCodes would miss exactly that.
+    ownedCodes: new Set(),
     // Set just before a programmatic history.back(), so the popstate handler
     // knows that navigation was already dealt with. Without it, closing the
     // modal pops TWO screens: closeModal hides the modal and calls
@@ -56,6 +67,8 @@ export function resetCollectionState() {
     state.clickedLabelCodes = new Set();
     state.labelShownCodes = new Set();
     state.shownCodes = new Set();
+    state.ownedCodes = new Set();
+    state.itemType = 'both';
 }
 
 export function matchesQuery(code, name, query) {

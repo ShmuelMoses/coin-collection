@@ -69,7 +69,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'status', 'content', 'signin-btn', 'login-box', 'login-version', 'app-version',
     'collection-view', 'cv-sidebar', 'cv-title', 'cv-controls-row', 'icon-row',
     'back-btn', 'view-toggle-btn', 'color-mode-btn', 'color-mode-dot', 'color-mode-label',
-    'reset-btn', 'export-btn', 'info-btn', 'search-box', 'search-ghost',
+    'reset-btn', 'export-btn', 'info-btn', 'search-box', 'search-ghost', 'item-type-btn',
     'cv-main', 'map', 'list-view',
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
@@ -134,7 +134,9 @@ global.history = { pushState() {}, back() {} };
 Object.defineProperty(global, 'navigator', {
     value: { storage: null, share: null, serviceWorker: null, onLine: true }, configurable: true, writable: true
 });
-global.requestAnimationFrame = fn => setTimeout(fn, 0);
+// Real handles, so the fade loop can be cancelled the way a browser cancels it.
+global.requestAnimationFrame = fn => setTimeout(() => fn(Date.now()), 8);
+global.cancelAnimationFrame = h => clearTimeout(h);
 global.URL.createObjectURL = () => 'blob:stub';
 global.URL.revokeObjectURL = () => {};
 global.DOMParser = class { parseFromString() { return { documentElement: new El('svg') }; } };
@@ -412,6 +414,61 @@ check('code-less junk features are dropped, not merged into one "-99" entry',
     JSON.stringify(Object.keys(state.state.countryLayers)));
 check('frame drew parallels and meridians', added.polylines > 10, String(added.polylines));
 
+console.log('\nBanknotes and coins (folder-name case)');
+{
+    const drive2 = await import('./js/drive.js');
+
+    check('an ALL-CAPS folder is banknotes', countries.folderKind('ISR') === 'banknote');
+    check('an all-lowercase folder is coins', countries.folderKind('isr') === 'coin');
+    check('a mixed-case folder is not guessed at', countries.folderKind('Isr') === 'unknown');
+
+    // The two folders are the same country. They must merge on the map and
+    // stay separable underneath.
+    const map2 = countries.buildCountryMap([
+        { code: 'ISR', images: [{ id: 'n1' }, { id: 'n2' }] },
+        { code: 'isr', images: [{ id: 'c1' }] },
+        { code: 'FRA', images: [{ id: 'n3' }] },
+        { code: 'deu', images: [{ id: 'c2' }] },
+        { code: 'Mix', images: [{ id: 'u1' }] },
+    ]);
+    check('ISR and isr are one country on the map',
+        !!map2['ISR'] && map2['ISR'].own.length === 3, JSON.stringify(Object.keys(map2)));
+    check('each image carries the kind of the folder it came from',
+        map2['ISR'].own.filter(i => i.kind === 'banknote').length === 2 &&
+        map2['ISR'].own.filter(i => i.kind === 'coin').length === 1);
+
+    check('with banknotes selected a coins-only country has nothing',
+        countries.countryTotalCount(map2['DEU'], 'banknote') === 0 &&
+        countries.countryTotalCount(map2['DEU'], 'coin') === 1);
+    check('a country with both is never empty, whichever is selected',
+        countries.countryTotalCount(map2['ISR'], 'banknote') === 2 &&
+        countries.countryTotalCount(map2['ISR'], 'coin') === 1 &&
+        countries.countryTotalCount(map2['ISR'], 'both') === 3);
+    check('an unclassified folder is shown in every mode, never hidden',
+        countries.countryTotalCount(map2['MIX'], 'banknote') === 1 &&
+        countries.countryTotalCount(map2['MIX'], 'coin') === 1);
+    check('the info panel can report what is classified as what', (() => {
+        const k = countries.kindCounts(map2);
+        return k.banknote === 3 && k.coin === 2 && k.unknown === 1;
+    })(), JSON.stringify(countries.kindCounts(map2)));
+
+    // "ISR" and "isr" are different folders. Keying the images by upper-cased
+    // name threw one of the two away entirely.
+    const merged2 = drive2.mergeCurrencyGroups(
+        [{ code: 'FRA', images: [] }, { code: 'fra', images: [] }],
+        { EUR: ['FRA'] },
+        { 'EUR': [{ id: 'e-note' }], 'eur': [{ id: 'e-coin' }] },
+        ['EUR', 'eur', 'FRA', 'fra']);
+    const notes = merged2.find(c => c.code === 'FRA');
+    const coins = merged2.find(c => c.code === 'fra');
+    check('a shared-currency note folds into the note folder only',
+        notes.images.length === 1 && notes.images[0].id === 'e-note',
+        JSON.stringify(notes.images));
+    check('a shared-currency coin folds into the coin folder only',
+        coins.images.length === 1 && coins.images[0].id === 'e-coin',
+        JSON.stringify(coins.images));
+}
+
 console.log('\nGrid geometry (regression)');
 const ys = geo.parallelYs();
 const gaps = ys.slice(1).map((y, i) => y - ys[i]);
@@ -454,6 +511,71 @@ state.state.searchQuery = 'fran';
 map.applyFilters();
 check('an unaffected country keeps its original tooltip object',
     state.state.countryLayers['RUS'][0]._tooltip === before);
+
+console.log('\nSwitching item type recolours the map');
+{
+    state.state.searchQuery = '';
+    state.state.colorMode = 'both';
+    state.state.cvCountries = [
+        { code: 'FRA', images: [{ id: 'fn1', name: 'a' }] },   // banknotes only
+        { code: 'deu', images: [{ id: 'dc1', name: 'b' }] },   // coins only
+        { code: 'RUS', images: [{ id: 'rn1', name: 'c' }] },   // both
+        { code: 'rus', images: [{ id: 'rc1', name: 'd' }] },
+    ];
+    state.state.cvCountryMap = countries.buildCountryMap(state.state.cvCountries);
+    state.state.itemType = 'both';
+
+    const owned = () => [...state.state.ownedCodes].filter(c => ['FRA', 'DEU', 'RUS'].includes(c)).sort();
+    const press = () => byId.get('item-type-btn').dispatch('click');
+
+    press(); // both -> banknotes
+    check('the button switches to banknotes', state.state.itemType === 'banknote');
+    check('with banknotes selected, a coins-only country is painted as one you ' +
+          'have nothing from',
+        JSON.stringify(owned()) === '["FRA","RUS"]', JSON.stringify(owned()));
+
+    press(); // -> coins
+    check('with coins selected, a banknotes-only country is painted the same way',
+        state.state.itemType === 'coin' && JSON.stringify(owned()) === '["DEU","RUS"]',
+        JSON.stringify(owned()));
+
+    check('a country you have both from is owned in every mode',
+        state.state.ownedCodes.has('RUS'));
+
+    press(); // -> both
+    check('and back to both', state.state.itemType === 'both' &&
+        JSON.stringify(owned()) === '["DEU","FRA","RUS"]', JSON.stringify(owned()));
+
+    check('the per-country count follows the selection too',
+        state.state.collectionData['RUS'].count === 2);
+}
+
+console.log('\nThe map fills in all at once, not country by country');
+{
+    // Everything muted first, so the fade below has a known starting point.
+    state.state.searchQuery = 'zzzzz';
+    map.applyFilters();
+    state.state.searchQuery = '';
+
+    const allLayers = Object.values(state.state.countryLayers).flat();
+    map.applyFilters({ animate: true, durationMs: 400 });
+    await new Promise(r => setTimeout(r, 90));
+
+    const opacities = allLayers.map(l => l._style && l._style.fillOpacity);
+    const finished = opacities.filter(o => o === 0.65).length;
+    const untouched = opacities.filter(o => o === 0.18).length;
+    check('no country has finished while others have not started',
+        finished === 0 && untouched === 0,
+        `${finished} already at full colour and ${untouched} not started yet - ` +
+        `that is the old one-after-another reveal`);
+    check('every country is at the same point in the fade',
+        new Set(opacities).size === 1, JSON.stringify([...new Set(opacities)]));
+
+    await new Promise(r => setTimeout(r, 450));
+    check('and they all reach full colour',
+        allLayers.every(l => l._style.fillOpacity === 0.65),
+        JSON.stringify([...new Set(allLayers.map(l => l._style.fillOpacity))]));
+}
 
 console.log('\nNavigation (popstate)');
 {

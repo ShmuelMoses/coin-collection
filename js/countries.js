@@ -144,6 +144,48 @@ export function canonicalCode(code) {
     return CODE_ALIASES[upper] || upper;
 }
 
+// ---------- banknotes vs coins ----------
+// The FOLDER NAME'S CASE says which a folder holds: "ISR" is Israeli
+// banknotes, "isr" is Israeli coins. Both fold into the same country on the
+// map - only what is shown, counted and coloured depends on which is selected.
+//
+// A mixed-case name says nothing either way, and is deliberately NOT guessed
+// at: those images are shown in every mode, so nothing can quietly vanish from
+// the app because a folder was named unexpectedly. The info panel reports how
+// many there are so they can be renamed.
+export const KIND_BANKNOTE = 'banknote';
+export const KIND_COIN = 'coin';
+export const KIND_UNKNOWN = 'unknown';
+
+export function folderKind(name) {
+    const s = String(name || '');
+    if (s.toLowerCase() === s.toUpperCase()) return KIND_UNKNOWN; // no letters at all
+    if (s === s.toUpperCase()) return KIND_BANKNOTE;
+    if (s === s.toLowerCase()) return KIND_COIN;
+    return KIND_UNKNOWN;
+}
+
+// itemType is 'both' | KIND_BANKNOTE | KIND_COIN.
+export function imageMatchesType(img, itemType) {
+    if (!itemType || itemType === 'both') return true;
+    const kind = (img && img.kind) || KIND_UNKNOWN;
+    if (kind === KIND_UNKNOWN) return true; // never hidden - see above
+    return kind === itemType;
+}
+
+// A view of one country holding only the selected kind. Returns the entry
+// itself when nothing is filtered out, so the common case allocates nothing.
+export function filterEntry(entry, itemType) {
+    if (!entry || !itemType || itemType === 'both') return entry;
+    const own = entry.own.filter(img => imageMatchesType(img, itemType));
+    const historical = {};
+    Object.entries(entry.historical).forEach(([histCode, images]) => {
+        const kept = images.filter(img => imageMatchesType(img, itemType));
+        if (kept.length) historical[histCode] = kept;
+    });
+    return { own, historical };
+}
+
 export const HISTORICAL_TO_MODERN = {
             'SUN': 'RUS',  // USSR -> Russia
             'CSK': 'CZE',  // Czechoslovakia -> Czech Republic
@@ -160,32 +202,55 @@ export function buildCountryMap(countries) {
     const map = {};
     countries.forEach(c => {
         const code = canonicalCode(c.code);
+        // Stamped here, from the folder the images came out of - by the time
+        // "ISR" and "isr" have been merged into one country the case is gone,
+        // so it has to be carried on the images themselves. Falling back to the
+        // folder name keeps snapshots written before v2.17 working.
+        const kind = c.kind || folderKind(c.code);
+        const images = c.images.map(img =>
+            (img && img.kind === kind) ? img : Object.assign({}, img, { kind }));
         const modern = HISTORICAL_TO_MODERN[code];
         if (modern) {
             if (!map[modern]) map[modern] = { own: [], historical: {} };
-            map[modern].historical[code] = (map[modern].historical[code] || []).concat(c.images);
+            map[modern].historical[code] = (map[modern].historical[code] || []).concat(images);
         } else {
             if (!map[code]) map[code] = { own: [], historical: {} };
-            map[code].own = map[code].own.concat(c.images);
+            map[code].own = map[code].own.concat(images);
         }
     });
     return map;
 }
 
-export function countryTotalCount(entry) {
-    return entry.own.length +
-        Object.values(entry.historical).reduce((s, arr) => s + arr.length, 0);
+export function countryTotalCount(entry, itemType) {
+    const e = filterEntry(entry, itemType);
+    return e.own.length +
+        Object.values(e.historical).reduce((s, arr) => s + arr.length, 0);
+}
+
+// How many of each kind the whole collection holds, counting each physical
+// item once. Shown in the info panel, where the "unclassified" figure is the
+// prompt to rename a folder that is neither all-caps nor all-lowercase.
+export function kindCounts(countryMap) {
+    const seen = new Map(); // id -> kind
+    Object.values(countryMap).forEach(entry => {
+        const all = entry.own.concat(...Object.values(entry.historical));
+        all.forEach(img => { if (!seen.has(img.id)) seen.set(img.id, img.kind || KIND_UNKNOWN); });
+    });
+    const counts = { [KIND_BANKNOTE]: 0, [KIND_COIN]: 0, [KIND_UNKNOWN]: 0 };
+    seen.forEach(kind => { counts[kind] = (counts[kind] || 0) + 1; });
+    return counts;
 }
 
 // Counts each physical note ONCE across the whole collection. A note shared
 // between countries by the currency-merge feature carries the same Drive file
 // id in every one of them, so summing per-country counts would count it many
 // times. Per-country counts are deliberately left as they are.
-export function uniqueImageCount(countryMap) {
+export function uniqueImageCount(countryMap, itemType) {
     const ids = new Set();
     Object.values(countryMap).forEach(entry => {
-        entry.own.forEach(img => ids.add(img.id));
-        Object.values(entry.historical).forEach(arr => arr.forEach(img => ids.add(img.id)));
+        const e = filterEntry(entry, itemType);
+        e.own.forEach(img => ids.add(img.id));
+        Object.values(e.historical).forEach(arr => arr.forEach(img => ids.add(img.id)));
     });
     return ids.size;
 }

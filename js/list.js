@@ -28,14 +28,17 @@ export function renderList() {
     // Counts each physical note once - a note shared between countries by the
     // currency merge carries the same file id in each, so summing the
     // per-country counts would count it several times over.
-    const totalItems = uniqueImageCount(state.cvCountryMap);
+    const totalItems = uniqueImageCount(state.cvCountryMap, state.itemType);
     const ownedCount = entries.filter(e => e.owned).length;
     const worldCount = entries.length;
     const pct = worldCount ? Math.round((ownedCount / worldCount) * 100) : 0;
 
+    const noun = state.itemType === 'banknote' ? 'banknote'
+        : state.itemType === 'coin' ? 'coin' : 'item';
+
     const stats = document.createElement('div');
     stats.id = 'list-stats';
-    stats.textContent = `${totalItems} item${totalItems === 1 ? '' : 's'} from ${ownedCount} ` +
+    stats.textContent = `${totalItems} ${noun}${totalItems === 1 ? '' : 's'} from ${ownedCount} ` +
         `countr${ownedCount === 1 ? 'y' : 'ies'} — ${ownedCount}/${worldCount} of the world (${pct}%)`;
     listDiv.appendChild(stats);
 

@@ -13,7 +13,10 @@ import {
 } from './cache.js';
 import { state, resetCollectionState } from './state.js';
 import { startConnectivityMonitor, onConnectivityChange, checkNow } from './net.js';
-import { COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount } from './countries.js';
+import {
+    COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount,
+    kindCounts, KIND_BANKNOTE, KIND_COIN, KIND_UNKNOWN
+} from './countries.js';
 import { loadLayouts, resetLayouts } from './layouts.js';
 import { initModal, closeModal, isModalOpen, setModalCollectionName } from './modal.js';
 import { renderList } from './list.js';
@@ -635,19 +638,14 @@ async function showCollectionView(col, countries, opts) {
 
     state.cvCountries = countries;
     state.cvCountryMap = buildCountryMap(countries);
-    state.collectionData = {};
-    Object.entries(state.cvCountryMap).forEach(([code, entry]) => {
-        const total = countryTotalCount(entry);
-        if (total > 0) {
-            state.collectionData[code] = { count: total, name: COUNTRY_NAMES[code] || code };
-        }
-    });
+    rebuildCollectionData();
 
     document.getElementById('login-box').style.display = 'none';
     document.getElementById('collection-view').style.display = 'flex';
     document.getElementById('cv-title').textContent = col.name;
 
     renderViewToggle();
+    renderItemTypeButton();
     updateConnectionUi();
     await initMap();
     renderList(); // after initMap, so countryNameLookup is populated
@@ -685,6 +683,56 @@ window.addEventListener('popstate', () => {
 // ---------- collection-view controls ----------
 const MAP_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>';
 const LIST_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
+
+// ---------- banknotes / coins ----------
+// Which folder an image came out of is what decides its kind, and the folder
+// name's CASE is what says so: "ISR" holds banknotes, "isr" holds coins. Both
+// are the same country on the map.
+const SVG_OPEN = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">';
+const BANKNOTE_ICON_SVG = SVG_OPEN +
+    '<rect x="2" y="6" width="20" height="12" rx="2"/>' +
+    '<circle cx="12" cy="12" r="2.9"/>' +
+    '<line x1="5.6" y1="9.8" x2="5.6" y2="14.2"/>' +
+    '<line x1="18.4" y1="9.8" x2="18.4" y2="14.2"/></svg>';
+const COIN_ICON_SVG = SVG_OPEN +
+    '<circle cx="12" cy="12" r="8.6"/>' +
+    '<circle cx="12" cy="12" r="4.6"/></svg>';
+// Laid out side by side rather than overlapping: an overlap needs an opaque
+// fill to cut the note out, and no single fill colour is right in both themes.
+const BOTH_ICON_SVG = SVG_OPEN +
+    '<rect x="1.4" y="3" width="13.2" height="8" rx="1.5"/>' +
+    '<circle cx="8" cy="7" r="1.7"/>' +
+    '<circle cx="16.4" cy="16.2" r="5.6"/>' +
+    '<circle cx="16.4" cy="16.2" r="2.7"/></svg>';
+
+const ITEM_TYPES = [
+    { key: 'both', label: 'Showing: Banknotes and coins', icon: BOTH_ICON_SVG },
+    { key: KIND_BANKNOTE, label: 'Showing: Banknotes only', icon: BANKNOTE_ICON_SVG },
+    { key: KIND_COIN, label: 'Showing: Coins only', icon: COIN_ICON_SVG },
+];
+
+// Recomputed rather than stored, because "owned" is relative to what is being
+// shown: with banknotes selected, a country you only have coins from has a
+// count of zero and is painted as one you have nothing from.
+function rebuildCollectionData() {
+    state.collectionData = {};
+    Object.entries(state.cvCountryMap).forEach(([code, entry]) => {
+        const total = countryTotalCount(entry, state.itemType);
+        if (total > 0) {
+            state.collectionData[code] = { count: total, name: COUNTRY_NAMES[code] || code };
+        }
+    });
+}
+
+function renderItemTypeButton() {
+    const btn = document.getElementById('item-type-btn');
+    if (!btn) return;
+    const mode = ITEM_TYPES.find(m => m.key === state.itemType) || ITEM_TYPES[0];
+    btn.innerHTML = mode.icon;
+    btn.title = mode.label;
+    btn.setAttribute('aria-label', mode.label);
+}
 
 function renderViewToggle() {
     const btn = document.getElementById('view-toggle-btn');
@@ -725,6 +773,18 @@ function initControls() {
     };
 
     document.getElementById('back-btn').onclick = () => goBackToCollections(false);
+
+    document.getElementById('item-type-btn').onclick = () => {
+        const idx = ITEM_TYPES.findIndex(m => m.key === state.itemType);
+        state.itemType = ITEM_TYPES[(idx + 1) % ITEM_TYPES.length].key;
+        renderItemTypeButton();
+        // Ownership itself changes here, so the counts, the list and the map
+        // colours all have to be rebuilt - in that order, because the list and
+        // the map both read collectionData.
+        rebuildCollectionData();
+        renderList();
+        applyFilters({ animate: true, durationMs: TRANSITION_MS });
+    };
 
     function updateGhostSuggestion() {
         const typed = searchBox.value;
@@ -993,8 +1053,23 @@ async function openInfoModal() {
         fact(col, 'Name', currentCollection.name);
         fact(col, 'Created', formatDate(currentFolderInfo && currentFolderInfo.createdTime));
         const countryCount = Object.keys(state.collectionData).length;
-        fact(col, 'Contents', `${uniqueImageCount(state.cvCountryMap)} items in ${countryCount} ` +
+        const shownCount = uniqueImageCount(state.cvCountryMap, state.itemType);
+        const shownLabel = state.itemType === KIND_BANKNOTE ? 'banknotes'
+            : state.itemType === KIND_COIN ? 'coins' : 'items';
+        fact(col, 'Showing', `${shownCount} ${shownLabel} in ${countryCount} ` +
             `countr${countryCount === 1 ? 'y' : 'ies'}`);
+
+        // The whole collection, whatever is currently selected - and, most
+        // usefully, how many folders were named neither all-caps nor all-
+        // lowercase, since those are the ones to rename.
+        const kinds = kindCounts(state.cvCountryMap);
+        const parts = [`${kinds[KIND_BANKNOTE]} banknote${kinds[KIND_BANKNOTE] === 1 ? '' : 's'}`,
+                       `${kinds[KIND_COIN]} coin${kinds[KIND_COIN] === 1 ? '' : 's'}`];
+        if (kinds[KIND_UNKNOWN]) {
+            parts.push(`${kinds[KIND_UNKNOWN]} unclassified (folder named neither ` +
+                       `ALL CAPS nor all lowercase - shown in every mode)`);
+        }
+        fact(col, 'In total', parts.join(', '));
     } else {
         fact(col, 'Name', 'No collection open');
     }

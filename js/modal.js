@@ -1,7 +1,7 @@
 // The per-country modal: viewing photos, the organise editor, and sharing.
 
 import { state } from './state.js';
-import { COUNTRY_NAMES } from './countries.js';
+import { COUNTRY_NAMES, filterEntry } from './countries.js';
 import { applyOrder, describeError } from './util.js';
 import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
 import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty } from './layouts.js';
@@ -293,8 +293,19 @@ function renderOrganizeSection(uncategorizedRaw, allOwnImages) {
     });
 }
 
-function renderModalContent(code) {
+// The country as the current banknotes/coins/both selection sees it. Organise
+// mode is the one exception and deliberately gets the WHOLE country: it saves
+// the category lists and the manual order wholesale, so arranging a country
+// while half of it was filtered out of view would drop the hidden half from
+// the saved layout.
+function entryFor(code, whole) {
     const entry = state.cvCountryMap[code];
+    if (!entry) return null;
+    return whole ? entry : filterEntry(entry, state.itemType);
+}
+
+function renderModalContent(code) {
+    const entry = entryFor(code, organizeMode);
     if (!entry) return;
     modalTitle.textContent = COUNTRY_NAMES[code] || code;
     modalImages.innerHTML = '';
@@ -342,7 +353,7 @@ function renderModalContent(code) {
 }
 
 export function openModal(code) {
-    const entry = state.cvCountryMap[code];
+    const entry = entryFor(code, false);
     if (!entry) return;
     currentModalCode = code;
     organizeMode = false;

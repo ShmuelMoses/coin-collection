@@ -3,7 +3,7 @@
 
 import { escapeHtml, blobToBase64, applyOrder } from './util.js';
 import { fetchFullImageBlob, resizeImageBlob } from './cache.js';
-import { COUNTRY_NAMES } from './countries.js';
+import { COUNTRY_NAMES, filterEntry } from './countries.js';
 import { getCountryLayout } from './layouts.js';
 import { state } from './state.js';
 
@@ -28,7 +28,9 @@ img{max-width:280px;max-height:280px;border-radius:6px;border:1px solid rgba(59,
 // Groups a country's images the same way the modal shows them: uncategorised
 // first, then saved categories in order, then historical entities.
 export function orderedGroupsFor(code) {
-    const entry = state.cvCountryMap[code];
+    // Shares what is on screen: with coins selected, a shared file holds the
+    // coins, not the whole country.
+    const entry = filterEntry(state.cvCountryMap[code], state.itemType);
     if (!entry) return [];
     const layout = getCountryLayout(code);
     const categorizedIds = new Set(layout.categories.flatMap(c => c.imageIds));

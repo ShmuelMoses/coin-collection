@@ -32,11 +32,90 @@ const COMPASS_ROSE_SVG = `<svg class="compass-rose-overlay" viewBox="-10 -10 220
 export let leafletMap = null;
 
 // ---------- colouring ----------
-// `animate` gives the "filling in / erasing country by country" transition in
-// random order over durationMs. Only countries that actually CHANGE are
-// animated - state.shownCodes remembers what is on screen - so each call only
-// touches what is different. Typing in the search box colours instantly;
-// animating that too would make it feel laggy.
+// Colour maths for the cross-fade. The palette lives in CSS custom properties,
+// so a value can arrive as #rgb, #rrggbb or rgb()/rgba() - all of which have to
+// become numbers before anything can be interpolated.
+function parseColor(value) {
+    const s = String(value || '').trim();
+    const m = s.match(/^rgba?\(([^)]+)\)$/i);
+    if (m) {
+        const p = m[1].split(',').map(v => parseFloat(v));
+        return [p[0] | 0, p[1] | 0, p[2] | 0];
+    }
+    let hex = s.replace('#', '');
+    if (hex.length === 3) hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+    const n = parseInt(hex, 16);
+    if (isNaN(n)) return [0, 0, 0];
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+const mix = (a, b, t) => Math.round(a + (b - a) * t);
+// Smoothstep: no hard start or stop, so the whole map eases in together
+// instead of snapping on at t=0.
+const ease = t => t * t * (3 - 2 * t);
+
+// Only one fade may be in flight. A second press while the first is still
+// running would otherwise leave two loops writing different colours to the
+// same layers, and whichever finished last would win.
+let activeFade = null;
+function cancelFade() {
+    if (activeFade === null) return;
+    cancelAnimationFrame(activeFade);
+    activeFade = null;
+}
+
+// Every country changes colour AT THE SAME TIME, over durationMs. It used to
+// be a staggered reveal - one country every durationMs/N - which on a large
+// collection meant watching the map fill in one country at a time.
+function animateFill(changes, durationMs, onDone) {
+    const specs = changes.map(ch => ({
+        layers: ch.layers,
+        fromRgb: parseColor(ch.from.fillColor),
+        toRgb: parseColor(ch.to.fillColor),
+        fromOpacity: ch.from.fillOpacity,
+        toOpacity: ch.to.fillOpacity,
+        to: ch.to,
+    }));
+
+    const started = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    // Every frame repaints the whole canvas, so on a phone with 250 polygons
+    // there is nothing to gain from 60fps. ~33fps is indistinguishable for a
+    // colour fade and costs half as much.
+    const MIN_FRAME_MS = 30;
+    let lastPainted = -Infinity;
+
+    const finish = () => {
+        activeFade = null;
+        specs.forEach(s => s.layers.forEach(layer => layer.setStyle(s.to)));
+        if (onDone) onDone();
+    };
+
+    const frame = () => {
+        const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+        const t = durationMs > 0 ? Math.min(1, (now - started) / durationMs) : 1;
+        if (t >= 1) { finish(); return; }
+        if (now - lastPainted >= MIN_FRAME_MS) {
+            lastPainted = now;
+            const e = ease(t);
+            specs.forEach(s => {
+                const style = {
+                    fillColor: `rgb(${mix(s.fromRgb[0], s.toRgb[0], e)},` +
+                               `${mix(s.fromRgb[1], s.toRgb[1], e)},` +
+                               `${mix(s.fromRgb[2], s.toRgb[2], e)})`,
+                    fillOpacity: s.fromOpacity + (s.toOpacity - s.fromOpacity) * e,
+                };
+                s.layers.forEach(layer => layer.setStyle(style));
+            });
+        }
+        activeFade = requestAnimationFrame(frame);
+    };
+    activeFade = requestAnimationFrame(frame);
+}
+
+// `animate` cross-fades every country that changes, all together, over
+// durationMs. Only countries that actually CHANGE are animated - shownCodes and
+// ownedCodes remember what is on screen - so each call only touches what is
+// different. Typing in the search box colours instantly; animating that too
+// would make it feel laggy.
 export function applyFilters(opts) {
     const animate = !!(opts && opts.animate);
     const durationMs = (opts && opts.durationMs) || REVEAL_MS;
@@ -48,12 +127,24 @@ export function applyFilters(opts) {
         const owned = isOwned(code);
         const show = passesFilters(code, name);
         if (show) matched.push(code);
+        // Both halves matter: switching between banknotes and coins can flip a
+        // country from the owned colour to the not-owned one without changing
+        // whether it is coloured at all.
+        const wasShown = state.shownCodes.has(code);
+        const wasOwned = state.ownedCodes.has(code);
         if (animate) {
-            if (state.shownCodes.has(code) !== show) changes.push({ layers, owned, toShow: show });
+            if (wasShown !== show || wasOwned !== owned) {
+                changes.push({
+                    layers,
+                    from: styleFor(wasShown, wasOwned),
+                    to: styleFor(show, owned),
+                });
+            }
         } else {
             layers.forEach(layer => layer.setStyle(styleFor(show, owned)));
         }
         if (show) state.shownCodes.add(code); else state.shownCodes.delete(code);
+        if (owned) state.ownedCodes.add(code); else state.ownedCodes.delete(code);
     });
 
     countryRowEls.forEach((item, code) => {
@@ -61,28 +152,19 @@ export function applyFilters(opts) {
     });
     refreshLabels();
 
+    cancelFade();
     if (animate && changes.length) {
-        for (let i = changes.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [changes[i], changes[j]] = [changes[j], changes[i]];
-        }
-        const step = durationMs / changes.length;
-        changes.forEach((entry, idx) => {
-            setTimeout(() => {
-                entry.layers.forEach(layer => layer.setStyle(styleFor(entry.toShow, entry.owned)));
-            }, idx * step);
-        });
-        // Settle pass: dozens of setStyle calls land close together across
-        // these staggered timeouts, and on slower devices the canvas renderer
-        // can drop one, leaving a country stuck in its old colour.
-        // state.shownCodes already holds the correct end state for EVERY code,
-        // so once the animation is done re-assert every layer unconditionally -
-        // a cheap no-op when nothing was dropped, a fix when something was.
-        setTimeout(() => {
+        // Settle pass: the canvas renderer can drop a style change under load,
+        // leaving a country stuck mid-fade. shownCodes / ownedCodes already
+        // hold the correct end state for EVERY code, so once the fade is done
+        // re-assert every layer unconditionally - a no-op when nothing was
+        // dropped, a fix when something was.
+        animateFill(changes, durationMs, () => {
             Object.entries(state.countryLayers).forEach(([code, layers]) => {
-                layers.forEach(layer => layer.setStyle(styleFor(state.shownCodes.has(code), isOwned(code))));
+                const style = styleFor(state.shownCodes.has(code), state.ownedCodes.has(code));
+                layers.forEach(layer => layer.setStyle(style));
             });
-        }, durationMs + 50);
+        });
     }
     return matched;
 }
@@ -152,6 +234,7 @@ export async function initMap() {
     state.countryNameLookup = {};
     state.labelShownCodes = new Set();
     state.shownCodes = new Set();
+    state.ownedCodes = new Set();
 
     leafletMap = L.map('map', {
         preferCanvas: true,
@@ -169,23 +252,24 @@ export async function initMap() {
         state.countryNameLookup[code] = name;
 
         layer.bindTooltip(name, { direction: 'center', className: 'country-label' });
-        if (isOwned(code)) {
-            layer.on('click', () => openModal(code));
-            layer.on('mouseover', function () {
-                if (passesFilters(code, name)) this.setStyle({ fillOpacity: 0.9 });
-            });
-            layer.on('mouseout', function () {
-                if (passesFilters(code, name)) this.setStyle({ fillOpacity: 0.65 });
-            });
-        } else {
+        // Decided at CLICK time, not here. Whether a country has anything in it
+        // now depends on whether banknotes, coins or both are selected, so a
+        // handler chosen once at build time would go on opening an empty modal
+        // for a country whose only items were just filtered out.
+        layer.on('click', () => {
+            if (isOwned(code)) { openModal(code); return; }
             // Nothing to open, so clicking pins the name label instead (click
             // again to unpin) - the touch equivalent of hovering.
-            layer.on('click', () => {
-                if (state.clickedLabelCodes.has(code)) state.clickedLabelCodes.delete(code);
-                else state.clickedLabelCodes.add(code);
-                refreshLabels();
-            });
-        }
+            if (state.clickedLabelCodes.has(code)) state.clickedLabelCodes.delete(code);
+            else state.clickedLabelCodes.add(code);
+            refreshLabels();
+        });
+        layer.on('mouseover', function () {
+            if (isOwned(code) && passesFilters(code, name)) this.setStyle({ fillOpacity: 0.9 });
+        });
+        layer.on('mouseout', function () {
+            if (isOwned(code) && passesFilters(code, name)) this.setStyle({ fillOpacity: 0.65 });
+        });
     }
 
     // Every country is one polygon layer, at any size. There is no longer a
