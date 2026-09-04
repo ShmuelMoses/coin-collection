@@ -1016,6 +1016,63 @@ console.log('\nSigning in actually starts a sign-in (item 1)');
     })());
 }
 
+console.log('\nThe collection is named after its Drive folder');
+{
+    const fs = await import('node:fs');
+    const html = fs.readFileSync('./index.html', 'utf8');
+    const appjs = fs.readFileSync('./js/app.js', 'utf8');
+
+    check('selected text uses the palette, not the system blue',
+        /::selection \{ background: var\(--accent-owned\); color: var\(--bg-solid\); \}/.test(html),
+        'the browser default is a bright blue that has nothing to do with the parchment');
+    check('and Firefox is covered too', /::-moz-selection/.test(html));
+
+    check('adding a collection no longer asks for a separate name',
+        /name: folder\.name/.test(appjs) && !/Name this collection/.test(appjs),
+        'a second name to keep in step is only a way for the two to disagree');
+    check('the explainer says the name comes from the folder',
+        /The collection takes its name from that folder/.test(appjs));
+
+    // An existing collection, named by hand before this rule existed, must
+    // adopt the folder's current name.
+    const realFiles = global.gapi.client.drive.files;
+    global.gapi.client.drive.files = {
+        list: async ({ q }) => {
+            if (q && q.includes('collections.json')) return { result: { files: [{ id: 'colfile' }] } };
+            if (q && q.includes('layouts.json')) return { result: { files: [] } };
+            if (q && q.includes('_thumb.jpg')) return { result: { files: [] } };
+            return { result: { files: [] } };
+        },
+        get: async ({ fileId, alt }) => {
+            if (alt === 'media' && fileId === 'colfile') {
+                return { body: JSON.stringify([{ id: 'folder1', name: 'Typed in by hand' }]) };
+            }
+            if (fileId === 'folder1') {
+                return { result: { id: 'folder1', name: 'Banknotes & Coins',
+                                   createdTime: '2026-01-02T00:00:00Z' } };
+            }
+            return { body: '{}' };
+        },
+        export: async () => ({ body: '' }),
+        delete: async () => ({}),
+    };
+
+    // On the login screen, as you would be when this runs for real.
+    byId.get('collection-view').style.display = 'none';
+    byId.get('login-box').style.display = 'block';
+    byId.get('signin-btn').dispatch('click');      // -> a fresh signed-in session
+    await new Promise(r => setTimeout(r, 400));
+
+    const names = () => byId.get('content').children
+        .filter(c => c.classList.contains('collection-item'))
+        .map(c => c.children[0] && c.children[0].textContent);
+    check('the list shows the folder\'s name, not the one typed in when it was added',
+        names().includes('Banknotes & Coins'),
+        JSON.stringify(names()) + ' - existing collections were not brought into step');
+
+    global.gapi.client.drive.files = realFiles;
+}
+
 console.log('\nSigning in keeps the user gesture (item 3)');
 {
     const fs = await import('node:fs');

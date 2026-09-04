@@ -51,6 +51,11 @@
             --frame: #5a3d22;
             --frame-light: #e8dcbb;
         }
+        /* Selected text. The browser's default is a bright system blue that has
+           nothing to do with the parchment - very visible on the green title.
+           Same pairing as .primary-btn, which is already proven readable. */
+        ::selection { background: var(--accent-owned); color: var(--bg-solid); }
+        ::-moz-selection { background: var(--accent-owned); color: var(--bg-solid); }
         body {
             font-family: Georgia, 'Times New Roman', serif;
             background: var(--bg-solid);

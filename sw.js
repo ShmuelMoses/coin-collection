@@ -11,7 +11,7 @@
 // served stale. They simply fail offline, which app.js handles by staying on
 // the sign-in screen.
 
-const VERSION = 'v2.19';
+const VERSION = 'v2.20';
 const SHELL_CACHE = 'collections-shell-' + VERSION;
 
 // Everything the app needs to boot with no network.

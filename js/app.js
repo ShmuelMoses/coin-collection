@@ -25,7 +25,7 @@ import {
     focusOnMatches, invalidateMapSize
 } from './map.js';
 import { buildCollectionExport, shareOrDownloadFile, isExportCancelled } from './export.js';
-import { alertDialog, confirmDialog, promptDialog, showProgressDialog, showChoiceDialog, isDialogOpen } from './dialog.js';
+import { alertDialog, confirmDialog, showProgressDialog, showChoiceDialog, isDialogOpen } from './dialog.js';
 import { describeError, isNetworkError } from './util.js';
 
 const statusEl = document.getElementById('status');
@@ -430,6 +430,13 @@ async function showCollectionsScreen(opts) {
     if (state.offline) addBtn.classList.add('offline-disabled');
     contentEl.appendChild(addBtn);
 
+    // Live path only: the fromSnapshot re-render comes from the refresh itself,
+    // so this cannot loop.
+    if (!(opts && opts.fromSnapshot) && !state.offline) {
+        refreshCollectionNames().catch(err =>
+            console.warn('Could not refresh the collection names:', err));
+    }
+
     if (state.offline) {
         const note = document.createElement('p');
         note.id = 'login-offline-note';
@@ -451,6 +458,47 @@ async function showCollectionsScreen(opts) {
 // Google's client is still missing (including the two <script> tags themselves,
 // if the page was opened with no connection) and only then asks for a token.
 let signInInFlight = false;
+// Existing collections were named by hand when they were added, so they can
+// have drifted from the folder they point at. The name is now the folder's, so
+// they are brought back into step - in the background, after the list is on
+// screen, since it is a handful of small metadata reads and none of them should
+// delay showing anything.
+async function refreshCollectionNames() {
+    if (state.offline || !state.online) return;
+    const cols = collectionsState.collections;
+    if (!cols.length) return;
+
+    const infos = await Promise.all(cols.map(c =>
+        getFolderInfo(c.id).catch(err => {
+            console.warn('Could not read the folder name for', c.id, err);
+            return null;
+        })));
+
+    let changed = false;
+    const updated = cols.map((c, i) => {
+        const name = infos[i] && infos[i].name;
+        if (!name || name === c.name) return c;
+        changed = true;
+        return Object.assign({}, c, { name });
+    });
+    if (!changed) return;
+
+    collectionsState.collections = updated;
+    saveSnapshot(SNAP.collections, updated);
+    try {
+        collectionsState.fileId = await saveCollections(collectionsState.fileId, updated);
+    } catch (err) {
+        // The screen is already right; it will simply be corrected again next
+        // time rather than being left wrong.
+        console.warn('Could not save the refreshed collection names:', err);
+    }
+    // Only while the list is still what the user is looking at. fromSnapshot,
+    // so this cannot loop back into another refresh.
+    if (document.getElementById('collection-view').style.display !== 'flex') {
+        await showCollectionsScreen({ fromSnapshot: true });
+    }
+}
+
 // Google's requestAccessToken opens a window, and a browser only allows that
 // while it still considers itself inside the click that asked for it. EVERY
 // await before it spends that gesture - a connectivity check is enough - and
@@ -555,14 +603,14 @@ async function pickerCallback(data) {
         if (!go) return;
     }
 
-    const typed = await promptDialog('Name this collection:', folder.name, { title: 'New collection' });
-    if (typed === null) return; // cancelled
-    const displayName = typed.trim() || folder.name;
-
-    // Build the new list without touching the live one, and only commit after
-    // Drive confirms the write - pushing first meant a failed save left a
+    // No name is asked for: the collection IS the folder, so it carries the
+    // folder's name and follows it if the folder is renamed. A second name to
+    // keep in step was only ever a way for the two to disagree.
+    //
+    // The new list is built without touching the live one, and only committed
+    // after Drive confirms the write - pushing first meant a failed save left a
     // collection on screen that had never been persisted.
-    const updated = collectionsState.collections.concat([{ id: folder.id, name: displayName }]);
+    const updated = collectionsState.collections.concat([{ id: folder.id, name: folder.name }]);
     setStatus('Saving...');
     try {
         const newFileId = await saveCollections(collectionsState.fileId, updated);
@@ -615,6 +663,15 @@ async function openCollection(col, opts) {
             })
         ]);
         currentFolderInfo = folderInfo;
+        // Already fetched for the info panel's creation date, so adopting the
+        // folder's name here is free - and it covers a collection opened before
+        // the background refresh has finished.
+        if (folderInfo && folderInfo.name && folderInfo.name !== col.name) {
+            col.name = folderInfo.name;
+            saveCollections(collectionsState.fileId, collectionsState.collections)
+                .then(id => { collectionsState.fileId = id; })
+                .catch(err => console.warn('Could not save the folder name:', err));
+        }
         setStatus('');
         // Everything needed to show this collection again with no connection,
         // including the folder date the info panel displays.
@@ -771,6 +828,10 @@ function renderItemTypeButton() {
 // counts as neither banknotes nor coins.
 const FOLDER_HELP = [
     'Everything comes from the Drive folder you picked. Inside it:',
+    '',
+    '•  The collection takes its name from that folder. Rename the folder in',
+    '   Drive and the name here follows it - there is no separate name to keep',
+    '   in step.',
     '',
     '•  One folder per country, named with its 3-letter code - ISR, FRA, USA.',
     '',
