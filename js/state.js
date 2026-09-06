@@ -29,6 +29,10 @@ export const state = {
     // Countries whose label is currently pinned, so the map only rebinds the
     // tooltips that actually changed.
     labelShownCodes: new Set(),
+    // Drive folders that produced no country on the map - a typo, or a
+    // three-letter code the map does not use. Reported in the info panel,
+    // because until now such a folder was simply, silently, absent.
+    unmappedFolders: [],
     // Countries currently painted as coloured rather than muted.
     shownCodes: new Set(),
     // Countries currently painted with the OWNED colour. Tracked alongside
@@ -68,6 +72,7 @@ export function resetCollectionState() {
     state.labelShownCodes = new Set();
     state.shownCodes = new Set();
     state.ownedCodes = new Set();
+    state.unmappedFolders = [];
     state.itemType = 'both';
 }
 

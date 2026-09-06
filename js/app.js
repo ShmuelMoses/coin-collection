@@ -15,7 +15,7 @@ import { state, resetCollectionState } from './state.js';
 import { startConnectivityMonitor, onConnectivityChange, checkNow } from './net.js';
 import {
     COUNTRY_NAMES, buildCountryMap, countryTotalCount, uniqueImageCount,
-    kindCounts, KIND_BANKNOTE, KIND_COIN, KIND_UNKNOWN
+    kindCounts, KIND_BANKNOTE, KIND_COIN, KIND_UNKNOWN, findUnmappedFolders
 } from './countries.js';
 import { loadLayouts, resetLayouts } from './layouts.js';
 import { initModal, closeModal, isModalOpen, setModalCollectionName } from './modal.js';
@@ -735,6 +735,14 @@ async function showCollectionView(col, countries, opts) {
     renderItemTypeButton();
     updateConnectionUi();
     await initMap();
+    // Which folders produced nothing. Only answerable once the map is built,
+    // because "on the map" means "has a polygon in countryLayers".
+    state.unmappedFolders = findUnmappedFolders(
+        state.cvCountries, new Set(Object.keys(state.countryLayers)));
+    if (state.unmappedFolders.length) {
+        console.warn('[folders] not represented on the map:',
+            state.unmappedFolders.map(u => u.folder).join(', '));
+    }
     renderList(); // after initMap, so countryNameLookup is populated
     if (!inPlace) history.pushState({ screen: 'collection' }, '');
 }
@@ -1204,6 +1212,60 @@ function formatDate(iso) {
     return d.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+// Folders read from Drive that produced no country. Silent until now: the
+// country was simply missing from the map and there was nothing to say why.
+function renderUnmappedFolders() {
+    const box = document.getElementById('info-unmapped');
+    if (!box) return;
+    box.innerHTML = '';
+    const list = state.unmappedFolders || [];
+    if (!list.length) return;
+
+    const head = document.createElement('div');
+    head.className = 'unmapped-head';
+    head.textContent = `${list.length} folder${list.length === 1 ? '' : 's'} in Drive ` +
+        `${list.length === 1 ? 'is' : 'are'} not shown on the map:`;
+    box.appendChild(head);
+
+    list.slice(0, 12).forEach(u => {
+        const row = document.createElement('div');
+        row.className = 'unmapped-row';
+
+        const name = document.createElement('span');
+        name.className = 'unmapped-name';
+        name.textContent = u.folder;
+        row.appendChild(name);
+
+        const detail = document.createElement('span');
+        const photos = `${u.count} photo${u.count === 1 ? '' : 's'}`;
+        detail.textContent = u.suggestion
+            ? ` — ${photos} — did you mean ${nameForSuggestion(u)}?`
+            : ` — ${photos} — not a country code the map knows`;
+        row.appendChild(detail);
+        box.appendChild(row);
+    });
+
+    if (list.length > 12) {
+        const more = document.createElement('div');
+        more.className = 'unmapped-row';
+        more.textContent = `…and ${list.length - 12} more.`;
+        box.appendChild(more);
+    }
+
+    const note = document.createElement('div');
+    note.className = 'unmapped-note';
+    note.textContent = 'Rename the folder in Drive and reopen the collection.';
+    box.appendChild(note);
+}
+
+// Suggested code, with the country's name and the case that says which kind of
+// folder it should be - "isr (Israel)" for a coin folder, "ISR" for notes.
+function nameForSuggestion(u) {
+    const code = u.kind === KIND_COIN ? u.suggestion.toLowerCase() : u.suggestion;
+    const name = COUNTRY_NAMES[u.suggestion];
+    return name ? `${code} (${name})` : code;
+}
+
 function renderThumbErrors() {
     const box = document.getElementById('info-errors');
     box.innerHTML = '';
@@ -1331,6 +1393,7 @@ async function openInfoModal() {
     } else {
         fact(col, 'Name', 'No collection open');
     }
+    renderUnmappedFolders();
     document.getElementById('export-btn').style.display = hasCollection ? 'flex' : 'none';
     document.getElementById('delete-collection-btn').style.display = hasCollection ? 'flex' : 'none';
     document.getElementById('folder-help-btn').style.display = hasCollection ? 'flex' : 'none';

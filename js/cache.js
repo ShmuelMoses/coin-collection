@@ -240,6 +240,18 @@ export async function fetchFullImageBlob(fileId, signal) {
 // browser decodes straight to the target size using its native image pipeline,
 // which is faster and sharper than decoding full-res into an <img> and scaling
 // by hand. Falls back to Image+canvas where that isn't supported (e.g. Safari).
+// willReadFrequently keeps this canvas in ordinary memory instead of as a GPU
+// texture. It is exactly the right hint here: every one of these canvases is
+// drawn to ONCE and then immediately read back by toBlob, and reading pixels
+// back off the GPU is the slow, stalling half of that round trip. The canvas
+// itself is tiny (320px for a thumbnail), so there is nothing to gain from
+// putting it on the GPU in the first place.
+function drawCanvas(w, h) {
+    const el = document.createElement('canvas');
+    el.width = w; el.height = h;
+    return { el, ctx: el.getContext('2d', { willReadFrequently: true }) };
+}
+
 function canvasToBlob(canvas, quality) {
     return new Promise((resolve, reject) => {
         try {
@@ -258,18 +270,23 @@ function canvasToBlob(canvas, quality) {
 // 48 MB decoded, and the previous version decoded it in full purely to read its
 // dimensions before shrinking it. Several of those at once is what a phone
 // cannot survive.
+// 'medium' rather than 'high'. This is the expensive step - the browser hands
+// the decode-and-scale to the GPU, which is why an integrated GPU sits at
+// 50-90% while a folder of photos is being processed - and 'high' asks for a
+// costlier resampling filter. Going from a 4000px photo to a 320px thumbnail
+// throws away 99% of the pixels either way; the difference between the two
+// filters at that ratio is not visible, and the work is noticeably less.
 async function resizeViaBitmap(blob, maxDim, quality) {
-    const bitmap = await createImageBitmap(blob, { resizeWidth: maxDim, resizeQuality: 'high' });
+    const bitmap = await createImageBitmap(blob, { resizeWidth: maxDim, resizeQuality: 'medium' });
     try {
         // Portrait images come back taller than maxDim (only the width was
         // constrained), so scale during the draw - free, no second decode.
         const scale = Math.min(1, maxDim / bitmap.width, maxDim / bitmap.height);
         const w = Math.max(1, Math.round(bitmap.width * scale));
         const h = Math.max(1, Math.round(bitmap.height * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
-        return await canvasToBlob(canvas, quality);
+        const canvas = drawCanvas(w, h);
+        canvas.ctx.drawImage(bitmap, 0, 0, w, h);
+        return await canvasToBlob(canvas.el, quality);
     } finally {
         bitmap.close();
     }
@@ -282,10 +299,9 @@ function resizeViaImage(blob, maxDim, quality) {
         img.onload = async () => {
             try {
                 const [width, height] = resizeDims(img.width, img.height, maxDim);
-                const canvas = document.createElement('canvas');
-                canvas.width = width; canvas.height = height;
-                canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-                resolve(await canvasToBlob(canvas, quality));
+                const canvas = drawCanvas(width, height);
+                canvas.ctx.drawImage(img, 0, 0, width, height);
+                resolve(await canvasToBlob(canvas.el, quality));
             } catch (err) {
                 reject(err);
             } finally {

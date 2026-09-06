@@ -370,6 +370,18 @@
         #cache-modal { text-align: left; width: 420px; max-height: 88vh; overflow-y: auto; }
         #cache-modal h3 { text-align: center; }
         #info-collection, #info-app { margin: 0 0 12px 0; font-size: 13px; line-height: 1.5; }
+        /* Drive folders that produced no country. A warning rather than an
+           error - nothing is broken, but those photos are not being shown. */
+        #info-unmapped:not(:empty) {
+            margin: 4px 0 12px 0; padding: 10px 12px;
+            border: 1px solid var(--accent-none); border-radius: 6px;
+            background: rgba(161,61,43,0.08);
+            font-size: 12px; line-height: 1.5;
+        }
+        #info-unmapped .unmapped-head { color: var(--accent-none); margin-bottom: 6px; }
+        #info-unmapped .unmapped-row { margin-bottom: 3px; word-break: break-word; }
+        #info-unmapped .unmapped-name { font-weight: bold; }
+        #info-unmapped .unmapped-note { margin-top: 8px; color: var(--text-dim); font-size: 11px; }
         #info-shortcuts { margin: 0 0 12px 0; font-size: 12px; line-height: 1.6; }
         #info-shortcuts div { display: flex; align-items: baseline; gap: 10px; }
         #info-shortcuts kbd {
@@ -599,6 +611,8 @@
 
             <!-- Desktop only, filled in by app.js from the same table that
                  defines the keys, so the two can never drift apart. -->
+            <div id="info-unmapped"></div>
+
             <h4 class="info-section" id="info-keys-heading" style="display:none;">Keyboard</h4>
             <dl id="info-shortcuts" style="display:none;"></dl>
 

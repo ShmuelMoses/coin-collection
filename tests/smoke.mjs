@@ -80,7 +80,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
     'info-collection', 'info-app', 'info-errors', 'delete-collection-btn',
     'offline-banner', 'info-signin-btn', 'offline-banner-text', 'offline-banner-btn',
-    'folder-help-btn', 'info-shortcuts', 'info-keys-heading',
+    'folder-help-btn', 'info-shortcuts', 'info-keys-heading', 'info-unmapped',
 ].forEach(id => mkEl(id));
 byId.get('search-box').value = '';
 byId.get('search-ghost').value = '';
@@ -706,6 +706,84 @@ console.log('\nReset, shortcuts, tooltips and duplicate folders');
         'filtering by folder id removed both entries when two pointed at one folder');
     check('and adding a second entry for the same folder says what will be shared',
         /already points at this same Drive folder/.test(appjs));
+}
+
+console.log('\nFolders that never reach the map');
+{
+    const mapped = new Set(['ISR', 'FRA', 'DEU', 'NLD', 'ZAF', 'ITA', 'RUS']);
+
+    check('a country name used instead of its code is recognised',
+        countries.suggestCodeFor('Israel', mapped) === 'ISR');
+    check('a name with the spaces dropped too',
+        countries.suggestCodeFor('SouthAfrica', mapped) === 'ZAF');
+    check('a different three-letter convention is recognised',
+        countries.suggestCodeFor('HOL', mapped) === 'NLD');
+    // The classic slip with a 3-letter code. Plain Levenshtein scores a swap
+    // as TWO edits and misses it entirely.
+    check('two swapped letters count as one mistake, so SIR finds ISR',
+        countries.suggestCodeFor('SIR', mapped) === 'ISR',
+        'plain edit distance scores a transposition 2 and never suggests it');
+    check('and a single wrong letter', countries.suggestCodeFor('ITL', mapped) === 'ITA');
+    check('something that is not a country at all gets no guess',
+        countries.suggestCodeFor('receipts', mapped) === null);
+
+    const found = countries.findUnmappedFolders([
+        { code: 'ISR', images: [{ id: 1 }] },          // fine
+        { code: 'isr', images: [{ id: 2 }] },          // fine, coins
+        { code: 'SIR', images: [{ id: 3 }, { id: 4 }] }, // typo
+        { code: 'HOL', images: [{ id: 5 }] },          // other convention
+        { code: 'SUN', images: [{ id: 6 }] },          // historical - IS represented
+        { code: 'CRC', images: [{ id: 7 }] },          // alias for CRI... not mapped here
+        { code: 'notes', images: [] },                 // not a country
+    ], mapped);
+    const folders = found.map(f => f.folder);
+    check('folders that do reach the map are not reported',
+        !folders.includes('ISR') && !folders.includes('isr'), JSON.stringify(folders));
+    check('a historical folder is not reported - it shows inside the modern country',
+        !folders.includes('SUN'), JSON.stringify(folders));
+    check('the ones that produce nothing are reported',
+        folders.includes('SIR') && folders.includes('HOL') && folders.includes('notes'),
+        JSON.stringify(folders));
+    check('with a guess at what was meant',
+        found.find(f => f.folder === 'SIR').suggestion === 'ISR' &&
+        found.find(f => f.folder === 'HOL').suggestion === 'NLD');
+    check('and the worst offender first', found[0].folder === 'SIR', JSON.stringify(folders));
+    check('the folder kind is carried, so the fix can be shown in the right case',
+        countries.findUnmappedFolders([{ code: 'sir', images: [] }], mapped)[0].kind === 'coin');
+
+    // ...and the info panel actually says so.
+    state.state.unmappedFolders = found;
+    byId.get('collection-view').style.display = 'flex';
+    byId.get('info-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 40));
+    // The stub's textContent does not gather children, so walk them.
+    const deepText = el => (el.textContent || '') + el.children.map(deepText).join('');
+    const text = byId.get('info-unmapped').children.map(deepText).join(' | ');
+    check('the info panel lists them, with the suggestion',
+        /SIR/.test(text) && /ISR/.test(text) && /Israel/.test(text), text.slice(0, 200));
+    byId.get('cache-close-btn').dispatch('click');
+    state.state.unmappedFolders = [];
+    byId.get('info-btn').dispatch('click');
+    await new Promise(r => setTimeout(r, 40));
+    check('and says nothing at all when every folder is on the map',
+        byId.get('info-unmapped').children.length === 0);
+    byId.get('cache-close-btn').dispatch('click');
+}
+
+console.log('\nThumbnailing asks the GPU for less');
+{
+    const fs = await import('node:fs');
+    const cachejs = fs.readFileSync('./js/cache.js', 'utf8');
+    // Every one of these canvases is drawn to once and then read straight back
+    // by toBlob. Keeping it off the GPU skips an upload and a stalling readback
+    // per photo, and at 320px there was nothing to gain from a texture anyway.
+    check('the resize canvas is not put on the GPU just to be read back',
+        /willReadFrequently: true/.test(cachejs) &&
+        !/getContext\('2d'\)/.test(cachejs),
+        'a GPU-backed canvas costs an upload and a readback for every thumbnail');
+    check('and the decode asks for a cheaper filter than "high"',
+        /resizeQuality: 'medium'/.test(cachejs),
+        'going from 4000px to 320px throws away 99% of the pixels either way');
 }
 
 console.log('\nNavigation (popstate)');

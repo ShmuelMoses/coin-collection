@@ -254,3 +254,111 @@ export function uniqueImageCount(countryMap, itemType) {
     });
     return ids.size;
 }
+
+// ---------- folders that never reach the map ----------
+// A folder whose name is not a code the map knows contributes nothing: it is
+// read from Drive, its photos are counted into nothing, and it simply never
+// appears. Nothing said so - the country was just quietly missing - so the
+// info panel now lists them, with a guess at what was meant.
+
+// Damerau-Levenshtein (optimal string alignment): like ordinary edit distance,
+// but two swapped letters count as ONE mistake rather than two. That matters
+// here more than anywhere - "SIR" for "ISR" is the classic slip with a
+// three-letter code, and plain Levenshtein scores it 2 and misses it.
+//
+// It stops as soon as the answer can only be worse than `limit`: every folder
+// is compared against ~250 codes and the only question ever asked is "is this
+// within one mistake", so there is no point finishing a comparison that has
+// already lost.
+export function editDistance(a, b, limit) {
+    a = String(a); b = String(b);
+    if (Math.abs(a.length - b.length) > limit) return limit + 1;
+    let prevPrev = null;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        const row = [i];
+        let best = i;
+        for (let j = 1; j <= b.length; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            let v = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + cost);
+            // ...the two letters are the same pair, the other way round.
+            if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+                v = Math.min(v, prevPrev[j - 2] + 1);
+            }
+            row[j] = v;
+            if (v < best) best = v;
+        }
+        if (best > limit) return limit + 1;
+        prevPrev = prev;
+        prev = row;
+    }
+    return prev[b.length];
+}
+
+// What the folder was probably meant to be. Three things are worth catching,
+// in this order: the country's NAME used instead of its code ("Israel"), a
+// different three-letter convention for the same country ("HOL" for the
+// Netherlands, "UK" for GBR), and a plain typo one letter away from a real code.
+export function suggestCodeFor(folderName, knownCodes) {
+    const raw = String(folderName || '').trim();
+    if (!raw) return null;
+    const upper = raw.toUpperCase();
+
+    // The English name, spelled out.
+    for (const code of knownCodes) {
+        const name = COUNTRY_NAMES[code];
+        if (name && name.toUpperCase() === upper) return code;
+    }
+    // A name with the spaces or punctuation dropped ("SouthAfrica").
+    const squashed = upper.replace(/[^A-Z]/g, '');
+    for (const code of knownCodes) {
+        const name = COUNTRY_NAMES[code];
+        if (name && name.toUpperCase().replace(/[^A-Z]/g, '') === squashed) return code;
+    }
+    // A common alternative code for the same country.
+    if (COMMON_MISCODES[upper] && knownCodes.has(COMMON_MISCODES[upper])) return COMMON_MISCODES[upper];
+    // A typo: exactly one edit from a code that IS on the map.
+    if (upper.length >= 2) {
+        for (const code of knownCodes) {
+            if (editDistance(upper, code, 1) <= 1) return code;
+        }
+    }
+    return null;
+}
+
+// Codes people reach for that are not ISO 3166-1 alpha-3. Not typos - just a
+// different convention - so an edit distance would never find them.
+export const COMMON_MISCODES = {
+    UK: 'GBR', GB: 'GBR', ENG: 'GBR', UAE: 'ARE', USSR: 'SUN', RU: 'RUS',
+    HOL: 'NLD', NED: 'NLD', SUI: 'CHE', SWI: 'CHE', GER: 'DEU', SPA: 'ESP',
+    POR: 'PRT', GRE: 'GRC', DEN: 'DNK', CRO: 'HRV', SLO: 'SVN', SER: 'SRB',
+    BUL: 'BGR', RUM: 'ROU', LAT: 'LVA', LIT: 'LTU', UKR: 'UKR', PRC: 'CHN',
+    ROC: 'TWN', SKO: 'KOR', NKO: 'PRK', JAP: 'JPN', PHI: 'PHL', VIE: 'VNM',
+    IRI: 'IRN', SRI: 'LKA', BUR: 'MMR', ZAI: 'COD', RSA: 'ZAF', MAD: 'MDG',
+    ALG: 'DZA', MOR: 'MAR', NIG: 'NGA', TAN: 'TZA', ZIM: 'ZWE', URU: 'URY',
+    PAR: 'PRY', CHI: 'CHL', BRZ: 'BRA', COS: 'CRI', PUE: 'PRI',
+};
+
+// Folders in the collection that produced no country on the map.
+// `mappedCodes` is the set of codes that actually got a polygon.
+export function findUnmappedFolders(countries, mappedCodes) {
+    const out = [];
+    const seen = new Set();
+    (countries || []).forEach(c => {
+        const raw = String(c.code);
+        if (seen.has(raw)) return;
+        seen.add(raw);
+        const code = canonicalCode(raw);
+        // A historical entity has no polygon of its own on purpose - it is
+        // shown as a section inside the modern country it became.
+        if (HISTORICAL_TO_MODERN[code]) return;
+        if (mappedCodes.has(code)) return;
+        out.push({
+            folder: raw,
+            kind: c.kind || folderKind(raw),
+            count: (c.images || []).length,
+            suggestion: suggestCodeFor(raw, mappedCodes),
+        });
+    });
+    return out.sort((a, b) => b.count - a.count || a.folder.localeCompare(b.folder));
+}
