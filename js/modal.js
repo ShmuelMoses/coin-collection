@@ -4,7 +4,7 @@ import { state } from './state.js';
 import { COUNTRY_NAMES, filterEntry } from './countries.js';
 import { applyOrder, describeError } from './util.js';
 import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
-import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty } from './layouts.js';
+import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty, propagateSharedLayout } from './layouts.js';
 import { buildCountryExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, showProgressDialog } from './dialog.js';
 
@@ -429,6 +429,13 @@ export function initModal() {
         layout.categories = draftCategories;
         layout.uncategorizedOrder = draftUncategorizedOrder;
         markLayoutDirty(currentModalCode);
+        // Notes shared with other countries take this arrangement with them,
+        // so a currency group only has to be organised once.
+        const alsoChanged = propagateSharedLayout(currentModalCode);
+        if (alsoChanged.length) {
+            console.log(`[layout] shared notes re-ordered in ${alsoChanged.length} other ` +
+                        `countr${alsoChanged.length === 1 ? 'y' : 'ies'}: ${alsoChanged.join(', ')}`);
+        }
         try {
             await saveLayoutsToDrive();
         } catch (err) {

@@ -17,7 +17,7 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
 // Single source of truth for the version: written into the login screen at
 // startup, and shown in the info panel behind the sidebar's "!" button.
-export const APP_VERSION = '2.21';
+export const APP_VERSION = '2.22';
 
 // How long boot waits for Google before giving up and offering offline mode.
 // One mutable object so the cadence is in a single visible place, and so the
@@ -46,6 +46,7 @@ export const MUTED_COLOR = cssVar('--muted');
 export const BORDER_COLOR = cssVar('--map-border');
 export const FRAME_COLOR = cssVar('--frame');
 export const FRAME_LIGHT_COLOR = cssVar('--frame-light');
+export const MAP_BG_COLOR = cssVar('--map-bg');
 
 // Styles applied to a country polygon. Kept here so the map and any future
 // view paint a country the same way.

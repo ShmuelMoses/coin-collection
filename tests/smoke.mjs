@@ -872,6 +872,90 @@ console.log('\nCollection share sizing');
     check('the thumbnail queue can be cleared', typeof cache.clearThumbQueue === 'function');
 }
 
+console.log('\nShared notes keep one arrangement, and are exported once');
+{
+    const layouts = await import('./js/layouts.js');
+    const exp2 = await import('./js/export.js');
+    const drive2 = await import('./js/drive.js');
+
+    // A euro note in three countries, exactly as mergeCurrencyGroups leaves it.
+    const merged = drive2.mergeCurrencyGroups(
+        [{ code: 'FRA', images: [{ id: 'f1', name: 'f1' }] },
+         { code: 'ESP', images: [{ id: 's1', name: 's1' }] },
+         { code: 'GRC', images: [] }],
+        { EUR: ['FRA', 'ESP', 'GRC'] },
+        { EUR: [{ id: 'e1', name: 'e1' }, { id: 'e2', name: 'e2' }, { id: 'e3', name: 'e3' }] },
+        ['EUR', 'FRA', 'ESP', 'GRC']);
+    check('a shared note is tagged with the pool it came from',
+        merged.find(c => c.code === 'FRA').images.every(i => i.id === 'f1' || i.sharedGroup === 'EUR'),
+        'nothing downstream can tell a shared note from the country\'s own');
+
+    state.state.currentCollectionId = 'colX';
+    state.state.cvCountries = merged;
+    state.state.cvCountryMap = countries.buildCountryMap(merged);
+    state.state.collectionData = {};
+    Object.entries(state.state.cvCountryMap).forEach(([c, e]) => {
+        const n = countries.countryTotalCount(e, 'both');
+        if (n) state.state.collectionData[c] = { count: n };
+    });
+    layouts.resetLayouts();
+
+    // Arrange France: e3 first, then e1 in a category, e2 left where it is.
+    const fra = layouts.getCountryLayout('FRA');
+    fra.categories = [{ name: 'First series', imageIds: ['e1'] }];
+    fra.uncategorizedOrder = ['e3', 'f1', 'e2'];
+
+    const touched = layouts.propagateSharedLayout('FRA');
+    check('arranging one country arranges every country sharing those notes',
+        touched.includes('ESP') && touched.includes('GRC'), JSON.stringify(touched));
+
+    const esp = layouts.getCountryLayout('ESP');
+    check('the shared note lands in a category of the same name',
+        esp.categories.some(c => c.name === 'First series' && c.imageIds.includes('e1')),
+        JSON.stringify(esp.categories));
+    check('and the remaining shared notes keep the order they were given',
+        esp.uncategorizedOrder.filter(id => id.startsWith('e')).join() === 'e3,e2',
+        JSON.stringify(esp.uncategorizedOrder));
+    // uncategorizedOrder lists only what has been explicitly placed; applyOrder
+    // appends the rest. So the country's own note is still shown - after the
+    // shared block, which is the point: the part that is the same everywhere
+    // reads the same everywhere.
+    const espShown = util.applyOrder(esp.uncategorizedOrder,
+        [{ id: 's1' }, { id: 'e3' }, { id: 'e2' }]).map(i => i.id);
+    check("the country's OWN note is still shown, after the shared block",
+        espShown.join() === 'e3,e2,s1', JSON.stringify(espShown));
+    check('a country with nothing of its own gets the arrangement too',
+        layouts.getCountryLayout('GRC').uncategorizedOrder.join() === 'e3,e2');
+
+    // ---- the exported book ----
+    const out = await exp2.buildCollectionExport('Test Collection', 512 * 1024);
+    const html = await out.blob.text();
+
+    check('a shared note is listed ONCE, under the pool',
+        (html.match(/id="g-EUR"/g) || []).length === 1, 'the pool has no section of its own');
+    check('and the countries link to it instead of repeating it',
+        (html.match(/shown once under/g) || []).length >= 2 &&
+        (html.match(/href="#g-EUR"/g) || []).length >= 3,
+        'every euro country would otherwise carry its own copy of the same notes');
+    check('a country that holds only shared notes still has an entry',
+        /id="c-GRC"/.test(html));
+
+    // ---- it reads as a book ----
+    check('there is a cover with the world map on it',
+        /class="page cover"/.test(html) && /<svg /.test(html) && /<path d="M/.test(html),
+        'the cover map is drawn from the same GeoJSON and projection as the live map');
+    check('the cover map is coloured the way the app colours it',
+        html.includes('#4b6b3a') && html.includes('#a13d2b'));
+    check('a page of figures follows it', /At a glance/.test(html) && /<dl class="stats">/.test(html));
+    check('then a contents page every section links back to',
+        /<section class="page" id="toc">/.test(html) &&
+        (html.match(/href="#toc"/g) || []).length >= 4);
+    check('every country is its own page', /break-after:page/.test(html) &&
+        (html.match(/<section class="page"/g) || []).length >= 5);
+    check('the contents are in four columns, not two',
+        /\.toc\{[^}]*columns:4/.test(html), 'the list of countries ran down the page in two');
+}
+
 console.log('\nThumbnail queue (the Android failure)');
 {
     const cache = await import('./js/cache.js');

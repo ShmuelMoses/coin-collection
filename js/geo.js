@@ -1,7 +1,9 @@
 // World-boundary loading, the Mercator maths the antique frame depends on, and
 // the frame/compass geometry itself.
 
-import { FRAME_COLOR, FRAME_LIGHT_COLOR } from './config.js';
+import {
+    FRAME_COLOR, FRAME_LIGHT_COLOR, MAP_BG_COLOR, MUTED_COLOR, BORDER_COLOR
+} from './config.js';
 
 // ---------- feature identity and filtering ----------
 // countries.geojson stores "-99" for anything without a real ISO code. Most of
@@ -202,4 +204,115 @@ export function buildMapFrame() {
     });
 
     return group;
+}
+
+// ---------- the map as a standalone SVG ----------
+// The exported file is opened without this app, so it cannot use Leaflet: the
+// cover map is drawn here from the same GeoJSON and the same Mercator maths the
+// live map uses, as plain SVG path data with the colours written in.
+//
+// Coordinates are rounded to one decimal and points closer together than
+// SIMPLIFY_PX are dropped. On a 1100px-wide map that is invisible, and it is
+// the difference between a couple of megabytes of path data and a few hundred
+// kilobytes - which matters in a file that already carries every photo.
+const SIMPLIFY_PX = 0.6;
+
+function ringToPath(ring, px, py) {
+    let d = '';
+    let lastX = null, lastY = null;
+    for (let i = 0; i < ring.length; i++) {
+        const x = px(ring[i][0]);
+        const y = py(ring[i][1]);
+        const keep = lastX === null ||
+            Math.abs(x - lastX) >= SIMPLIFY_PX || Math.abs(y - lastY) >= SIMPLIFY_PX ||
+            i === ring.length - 1;
+        if (!keep) continue;
+        d += (lastX === null ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1);
+        lastX = x; lastY = y;
+    }
+    return d ? d + 'Z' : '';
+}
+
+function featurePath(geometry, px, py) {
+    const polys = geometry.type === 'Polygon' ? [geometry.coordinates]
+        : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
+    return polys.map(rings => rings.map(r => ringToPath(r, px, py)).join('')).join('');
+}
+
+// `fillFor(code)` returns { fill, opacity } for one country.
+export async function buildWorldSvg(fillFor, opts) {
+    const width = (opts && opts.width) || 1100;
+    const features = await getGeoFeatures();
+
+    const yMin = mercatorY(FRAME_LAT_MIN), yMax = mercatorY(FRAME_LAT_MAX);
+    const lonSpan = FRAME_LON_MAX - FRAME_LON_MIN;
+    const ySpan = yMax - yMin;
+    const height = Math.round(width * ySpan / lonSpan);
+
+    // The world wraps at the Bering Strait, so anything west of the left edge
+    // belongs on the right-hand side of this map, not off it.
+    const normLon = lon => (lon < FRAME_LON_MIN ? lon + 360 : lon);
+    const px = lon => ((normLon(lon) - FRAME_LON_MIN) / lonSpan) * width;
+    // Clamped before projecting: mercatorY(90) is infinite.
+    const py = lat => ((yMax - mercatorY(Math.max(-85, Math.min(85, lat)))) / ySpan) * height;
+
+    let out = `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" ` +
+              `width="100%" role="img" aria-label="World map of this collection">`;
+    out += `<rect x="0" y="0" width="${width}" height="${height}" fill="${MAP_BG_COLOR}"/>`;
+
+    features.forEach(f => {
+        const code = getCodeForFeature(f);
+        if (!code) return;
+        const d = featurePath(f.geometry, px, py);
+        if (!d) return;
+        const style = fillFor(code) || {};
+        out += `<path d="${d}" fill="${style.fill || MUTED_COLOR}" fill-opacity="${style.opacity == null ? 0.18 : style.opacity}" ` +
+               `stroke="${BORDER_COLOR}" stroke-width="0.5"/>`;
+    });
+
+    // The grid, then the striped border on top of it - same geometry as the
+    // live map's frame, so the cover is recognisably the same picture.
+    const latInnerTop = inverseMercatorY(yMax - FRAME_BAND_THICKNESS);
+    const latInnerBottom = inverseMercatorY(yMin + FRAME_BAND_THICKNESS);
+    const lonInnerLeft = FRAME_LON_MIN + FRAME_BAND_THICKNESS;
+    const lonInnerRight = FRAME_LON_MAX - FRAME_BAND_THICKNESS;
+
+    out += `<g stroke="${FRAME_COLOR}" stroke-width="0.6" opacity="0.4" fill="none">`;
+    meridianLons().forEach(lon => {
+        out += `<line x1="${px(lon).toFixed(1)}" y1="${py(latInnerTop).toFixed(1)}" ` +
+               `x2="${px(lon).toFixed(1)}" y2="${py(latInnerBottom).toFixed(1)}"/>`;
+    });
+    parallelYs().forEach(y => {
+        const lat = inverseMercatorY(y);
+        out += `<line x1="${px(lonInnerLeft).toFixed(1)}" y1="${py(lat).toFixed(1)}" ` +
+               `x2="${px(lonInnerRight).toFixed(1)}" y2="${py(lat).toFixed(1)}"/>`;
+    });
+    out += `</g>`;
+
+    const rect = (lat0, lon0, lat1, lon1, fill, opacity) => {
+        const x = px(lon0), y = py(lat1), w = px(lon1) - x, h = py(lat0) - y;
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.abs(w).toFixed(1)}" ` +
+               `height="${Math.abs(h).toFixed(1)}" fill="${fill}" fill-opacity="${opacity}" ` +
+               `stroke="${FRAME_COLOR}" stroke-width="0.8"/>`;
+    };
+
+    const nHoriz = Math.max(4, Math.round(lonSpan / FRAME_STRIPE_LEN));
+    for (let i = 0; i < nHoriz; i++) {
+        const lon0 = FRAME_LON_MIN + (lonSpan * i) / nHoriz;
+        const lon1 = FRAME_LON_MIN + (lonSpan * (i + 1)) / nHoriz;
+        const dark = i % 2 === 0;
+        out += rect(latInnerTop, lon0, FRAME_LAT_MAX, lon1, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
+        out += rect(FRAME_LAT_MIN, lon0, latInnerBottom, lon1, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
+    }
+    const nVert = Math.max(4, Math.round(ySpan / FRAME_STRIPE_LEN));
+    for (let i = 0; i < nVert; i++) {
+        const lat0 = inverseMercatorY(yMin + (ySpan * i) / nVert);
+        const lat1 = inverseMercatorY(yMin + (ySpan * (i + 1)) / nVert);
+        const dark = i % 2 === 0;
+        out += rect(lat0, FRAME_LON_MIN, lat1, lonInnerLeft, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
+        out += rect(lat0, lonInnerRight, lat1, FRAME_LON_MAX, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
+    }
+
+    out += '</svg>';
+    return { svg: out, width, height };
 }

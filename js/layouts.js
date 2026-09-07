@@ -5,6 +5,7 @@ import { LAYOUTS_FILENAME } from './config.js';
 import { readJsonFromAppData, saveJsonToAppData } from './drive.js';
 import { SNAP, saveSnapshot, readSnapshot } from './cache.js';
 import { state } from './state.js';
+import { applyOrder } from './util.js';
 
 let layoutsCache = null; // {fileId, data: {collectionId: {countryCode: {...}}}}
 
@@ -87,4 +88,69 @@ export async function saveLayoutsToDrive() {
     layoutsCache = { fileId: remote.fileId || newId, data: merged };
     saveSnapshot(SNAP.layouts, merged);
     dirtyLayoutKeys.clear();
+}
+
+// ---------- shared notes keep ONE arrangement ----------
+// A note shared by a currency group sits in every country of that group. Each
+// country had its own layout, so arranging the euro notes in France left Spain,
+// Greece and two dozen others still in their original order - the same work, 27
+// times over. Arranging one country now arranges the shared notes in all of
+// them: same category, same order.
+//
+// Only the SHARED images are copied across. Each country's own notes keep their
+// own places, and they are left after the shared ones so the block that is the
+// same everywhere reads the same everywhere.
+
+// Every image id in one country, as the modal sees it.
+function ownIdsFor(code) {
+    const entry = state.cvCountryMap[code];
+    return new Set(entry ? entry.own.map(i => i.id) : []);
+}
+
+// The order the source country ACTUALLY shows, which is not the same as its
+// stored uncategorizedOrder: that lists only the images explicitly moved, and
+// applyOrder appends the rest.
+function displayedUncategorized(code, layout) {
+    const entry = state.cvCountryMap[code];
+    if (!entry) return [];
+    const categorized = new Set(layout.categories.flatMap(c => c.imageIds));
+    const raw = entry.own.filter(i => !categorized.has(i.id));
+    return applyOrder(layout.uncategorizedOrder, raw).map(i => i.id);
+}
+
+export function propagateSharedLayout(sourceCode) {
+    const src = getCountryLayout(sourceCode);
+    const srcIds = ownIdsFor(sourceCode);
+    if (!srcIds.size) return [];
+
+    const srcUncategorized = displayedUncategorized(sourceCode, src);
+    const touched = [];
+
+    Object.keys(state.cvCountryMap).forEach(code => {
+        if (code === sourceCode) return;
+        const shared = new Set([...ownIdsFor(code)].filter(id => srcIds.has(id)));
+        if (!shared.size) return;
+
+        const target = getCountryLayout(code);
+        // Lift the shared images out of wherever they are in this country...
+        target.categories.forEach(cat => {
+            cat.imageIds = cat.imageIds.filter(id => !shared.has(id));
+        });
+        target.uncategorizedOrder = target.uncategorizedOrder.filter(id => !shared.has(id));
+
+        // ...and put them back where the source has them, in the source's order.
+        src.categories.forEach(srcCat => {
+            const ids = srcCat.imageIds.filter(id => shared.has(id));
+            if (!ids.length) return;
+            let cat = target.categories.find(c => c.name === srcCat.name);
+            if (!cat) { cat = { name: srcCat.name, imageIds: [] }; target.categories.push(cat); }
+            cat.imageIds = ids.concat(cat.imageIds);
+        });
+        target.uncategorizedOrder =
+            srcUncategorized.filter(id => shared.has(id)).concat(target.uncategorizedOrder);
+
+        markLayoutDirty(code);
+        touched.push(code);
+    });
+    return touched;
 }

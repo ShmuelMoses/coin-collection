@@ -214,8 +214,16 @@ export function mergeCurrencyGroups(countries, currencyGroups, imagesByFolderNam
                     countries.push(entry);
                     countryByKey[key] = entry;
                 }
+                // Tagged with the pool it came from. Everything downstream needs
+                // to know an image is SHARED rather than this country's own:
+                // the export lists it once under the pool instead of repeating
+                // it in every country, and ordering it in one country has to
+                // order it in all of them.
                 const existingIds = new Set(entry.images.map(img => img.id));
-                pool.images.forEach(img => { if (!existingIds.has(img.id)) entry.images.push(img); });
+                pool.images.forEach(img => {
+                    if (existingIds.has(img.id)) return;
+                    entry.images.push(Object.assign({}, img, { sharedGroup: currency }));
+                });
             });
         });
     });
