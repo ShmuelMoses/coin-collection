@@ -3,7 +3,7 @@
 import { MUTED_COLOR, BORDER_COLOR, styleFor, REVEAL_MS } from './config.js';
 import { state, passesFilters, matchesQuery, isOwned } from './state.js';
 import {
-    getGeoFeatures, getCodeForFeature,
+    getProjectedFeatures, getCodeForFeature,
     buildMapFrame, FRAME_BOUNDS, COMPASS_BOUNDS
 } from './geo.js';
 import { canonicalCode } from './countries.js';
@@ -238,8 +238,19 @@ export async function initMap() {
 
     leafletMap = L.map('map', {
         preferCanvas: true,
+        // CRS.Simple: the boundaries are projected to Equal Earth ONCE when
+        // they are loaded (see geo.js), and Leaflet is then just a pan/zoom
+        // surface over that flat plane. A custom L.CRS would need the inverse
+        // projection on every pan, and Equal Earth has no closed-form inverse.
+        crs: L.CRS.Simple,
+        // Without this the map fits the window a whole zoom step short of
+        // filling it. CRS.Simple doubles the scale per zoom level and Leaflet
+        // snaps to whole levels by default, so a frame that needs 3.2x is
+        // drawn at 2x - half the screen wasted. There are no zoom buttons to
+        // make awkward, so exact fitting costs nothing.
+        zoomSnap: 0,
         worldCopyJump: false,
-        maxBounds: [[-90, -169], [90, 191]],
+        maxBounds: FRAME_BOUNDS,
         maxBoundsViscosity: 1.0,
         zoomControl: false,
         // Leaflet's own badge in the bottom-right corner ("Leaflet", with a
@@ -251,9 +262,9 @@ export async function initMap() {
         // the source, which it is (see the comment on the script tag in
         // index.html and the header of leaflet.js), not on screen.
         attributionControl: false
-    }).setView([20, 10], 2);
+    }).setView([0, 0], 1);
 
-    const features = await getGeoFeatures();
+    const features = await getProjectedFeatures();
 
     function register(code, name, layer) {
         if (!state.countryLayers[code]) state.countryLayers[code] = [];

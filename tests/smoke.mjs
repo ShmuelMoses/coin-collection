@@ -249,6 +249,7 @@ function layerStub(kind) {
 const added = { polylines: 0, rectangles: 0, markers: 0, overlays: 0 };
 let lastMapOptions = null;
 global.L = {
+    CRS: { Simple: { __simple: true } },
     map: (_id, opts) => (lastMapOptions = opts, {
         setView() { return this; },
         remove() {},
@@ -473,14 +474,116 @@ console.log('\nBanknotes and coins (folder-name case)');
         JSON.stringify(coins.images));
 }
 
-console.log('\nGrid geometry (regression)');
-const ys = geo.parallelYs();
-const gaps = ys.slice(1).map((y, i) => y - ys[i]);
-check('parallels evenly spaced in projected space',
-    gaps.length > 3 && gaps.every(g => Math.abs(g - geo.GRID_STEP) < 1e-9), JSON.stringify(gaps));
-check('equator is ruled', ys.includes(0));
-check('compass sits on a real intersection',
-    ys.includes(-geo.GRID_STEP) && geo.meridianLons().includes(geo.COMPASS_CENTER_LON));
+console.log('\nEqual Earth projection');
+{
+    const fs = await import('node:fs');
+    const world = JSON.parse(fs.readFileSync('./countries.geojson', 'utf8'));
+
+    // Shoelace over the projected rings. On an EQUAL-AREA projection this is
+    // proportional to real ground area, which is the whole point of the change.
+    const areaOf = name => {
+        const f = world.features.find(x => x.properties.name === name);
+        const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+        let total = 0;
+        polys.forEach(rings => rings.forEach((ring, ri) => {
+            let a = 0;
+            const pts = ring.map(([lon, lat]) => geo.project(lon, lat));
+            for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                a += (pts[j][0] * pts[i][1]) - (pts[i][0] * pts[j][1]);
+            }
+            total += (ri === 0 ? 1 : -1) * Math.abs(a / 2);
+        }));
+        return total;
+    };
+
+    // Greenland is 2.17 million km2; Africa is 30.3 million. On Mercator they
+    // come out about the same size, which is the distortion the UN resolution
+    // of 4 September 2026 is about - and the reason to move: this map exists
+    // to show which countries you have and which you do not.
+    const greenland = areaOf('Greenland');
+    const algeria = areaOf('Algeria');   // 2.38 million km2 - almost exactly Greenland's
+    const ratio = greenland / algeria;
+    check('the projection is equal-area: Greenland and Algeria are the same ' +
+          'size, as they are on the ground',
+        ratio > 0.8 && ratio < 1.2,
+        `Greenland/Algeria = ${ratio.toFixed(2)} (Mercator gives about 6)`);
+
+    const brazil = areaOf('Brazil');
+    check('and Brazil is about three and a half times Greenland',
+        brazil / greenland > 3 && brazil / greenland < 4.2,
+        (brazil / greenland).toFixed(2));
+
+    // Parallels are straight lines on a pseudocylindrical projection, so an
+    // even spacing in DEGREES is an even spacing on screen - which is exactly
+    // what Mercator could not give (see the GRID_STEP history in geo.js).
+    const lats = geo.parallelLats();
+    check('the equator is ruled', lats.includes(0));
+    check('parallels are evenly spaced in latitude', (() => {
+        const gaps = lats.slice(1).map((l, i) => l - lats[i]);
+        return gaps.length > 1 && gaps.every(g => g === geo.GRID_STEP);
+    })(), JSON.stringify(lats));
+    // Equal Earth does NOT space parallels evenly on screen - it tightens them
+    // towards the poles, which is how it stays equal-area while the world
+    // narrows. What matters is that it tightens GENTLY. Mercator did the
+    // opposite without bound: its 60-to-80 band came out three times taller
+    // than every other one, which is what read as a missing grid line.
+    check('parallel spacing tightens towards the poles, and only gently', (() => {
+        const ys = lats.map(l => geo.project(0, l)[1]);
+        const gaps = ys.slice(1).map((y, i) => y - ys[i]);
+        const shrinking = gaps.every((g, i) => i === 0 || g <= gaps[i - 1] + 1e-9);
+        return shrinking && Math.min(...gaps) / Math.max(...gaps) > 0.7;
+    })(), JSON.stringify(lats.map(l => geo.project(0, l)[1].toFixed(1))));
+
+    // A meridian is a curve here, so it has to be drawn as one.
+    const m = geo.meridianPath(-120);
+    check('a meridian is drawn as a curve, not one straight segment',
+        m.length > 8 && (() => {
+            const [y0, x0] = m[0], [y1, x1] = m[m.length - 1];
+            const [ym, xm] = m[Math.floor(m.length / 2)];
+            const t = (ym - y0) / (y1 - y0);
+            return Math.abs(xm - (x0 + (x1 - x0) * t)) > 1;
+        })(), 'a straight line here would cut across the map');
+    check('the central meridian is the one straight one', (() => {
+        const c = geo.meridianPath(geo.CENTRAL_MERIDIAN);
+        return c.every(([, x]) => Math.abs(x) < 1e-9);
+    })());
+
+    // The world is a lens inside a rectangle, so the parallels stop at its
+    // edge instead of running out into the empty corners.
+    check('the world narrows away from the equator',
+        geo.halfWidthAt(0) > geo.halfWidthAt(60) + 30,
+        `${geo.halfWidthAt(0).toFixed(0)} vs ${geo.halfWidthAt(60).toFixed(0)}`);
+    check('and the frame is a rectangle wider than the world at its widest',
+        geo.FRAME_X_MAX > geo.halfWidthAt(0));
+
+    // The seam stays in the Bering Strait. In Mercator that was a shifted
+    // longitude range; here it is the central meridian. If a country's ring
+    // straddled it, that country would draw a stripe across the whole map.
+    let widest = 0, widestName = '';
+    world.features.forEach(f => {
+        if (f.properties.name === 'Antarctica' || !f.geometry) return;
+        const walk = c => {
+            if (typeof c[0] === 'number') return;
+            if (typeof c[0][0] === 'number') {
+                let lo = Infinity, hi = -Infinity;
+                c.forEach(([lon]) => {
+                    const l = geo.normaliseLon(lon);
+                    if (l < lo) lo = l; if (l > hi) hi = l;
+                });
+                if (hi - lo > widest) { widest = hi - lo; widestName = f.properties.name; }
+                return;
+            }
+            c.forEach(walk);
+        };
+        walk(f.geometry.coordinates);
+    });
+    check('no country wraps across the seam',
+        widest < 180, `${widestName} spans ${widest.toFixed(0)} degrees in one ring`);
+
+    check('the compass sits on a real grid intersection',
+        geo.meridianLons().includes(geo.COMPASS_CENTER_LON) &&
+        geo.parallelLats().includes(geo.COMPASS_CENTER_LAT));
+}
 
 console.log('\nList view');
 list.renderList();
@@ -699,6 +802,13 @@ console.log('\nReset, shortcuts, tooltips and duplicate folders');
     check("Leaflet's attribution badge is off - this map draws no tiles",
         lastMapOptions && lastMapOptions.attributionControl === false,
         'the "Leaflet" badge and its flag sit in the corner of the map');
+    check('the map runs on the flat projected plane, not on lat/lng',
+        lastMapOptions && lastMapOptions.crs === global.L.CRS.Simple,
+        'Leaflet would re-project the already-projected coordinates');
+    check('zoom is not snapped to whole levels',
+        lastMapOptions && lastMapOptions.zoomSnap === 0,
+        'CRS.Simple doubles per level, so the map fits a whole step short and ' +
+        'leaves half the window empty');
 
     // --- 6. Two collections on one Drive folder ---
     check('removing a collection removes THAT ROW, not every row sharing its folder',

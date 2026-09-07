@@ -63,166 +63,240 @@ export async function getGeoFeatures() {
     return cachedGeoJson.features.filter(featureFilter);
 }
 
-// ---------- Mercator ----------
-// A fixed number of DEGREES is not a fixed distance on screen: Mercator
-// stretches latitude by 1/cos(lat), so a band near the pole renders far taller
-// than the same band at the equator. Everything about the frame - border
-// thickness, stripe length, grid spacing - is therefore computed in PROJECTED
-// space and converted back to a latitude only at the moment of drawing.
-export function mercatorY(latDeg) {
-    const rad = latDeg * Math.PI / 180;
-    return Math.log(Math.tan(Math.PI / 4 + rad / 2)) * 180 / Math.PI;
+// ---------- Equal Earth ----------
+// The map is drawn on the Equal Earth projection (Savric, Patterson & Jenny,
+// 2018), which the UN General Assembly voted on 4 September 2026 to recommend
+// wherever the relative size of countries matters. That is exactly what this
+// map is for: it is a picture of which countries you have and which you do
+// not, and on Mercator, Greenland reads as the size of Africa when it is a
+// fourteenth of it - so Canada, Russia and Greenland dominated a picture that
+// is supposed to be about proportion.
+//
+// Every web map uses Mercator because square tiles have to line up. This one
+// draws its own polygons from countries.geojson and loads no tiles at all, so
+// that reason never applied here.
+//
+// The projection is applied ONCE, when the boundaries are loaded, and Leaflet
+// then runs on L.CRS.Simple over the resulting flat plane. The alternative -
+// a custom L.CRS - would need the inverse projection on every pan, and Equal
+// Earth has no closed-form inverse: it needs Newton iteration.
+const EE_A1 = 1.340264, EE_A2 = -0.081106, EE_A3 = 0.000893, EE_A4 = 0.003796;
+const EE_M = Math.sqrt(3) / 2;
+
+// The world wraps at the Bering Strait rather than through the middle of
+// Russia, exactly as before - now expressed as the projection's central
+// meridian instead of a shifted longitude range.
+export const CENTRAL_MERIDIAN = 11;
+export const LON_MIN = CENTRAL_MERIDIAN - 180;
+export const LON_MAX = CENTRAL_MERIDIAN + 180;
+
+// Scaled so the world is 360 units wide, the same as the old longitude range.
+// That keeps every frame constant below (band thickness, stripe length, grid
+// step) meaning what it always meant, and keeps the zoom levels familiar.
+const EE_HALF_WIDTH = Math.PI / (EE_M * EE_A1);   // x at lon 180, on the equator
+const PROJ_SCALE = 180 / EE_HALF_WIDTH;
+
+// Anything west of the seam belongs on the far side of this map, not off it.
+export function normaliseLon(lon) {
+    let l = lon;
+    while (l < LON_MIN) l += 360;
+    while (l > LON_MAX) l -= 360;
+    return l;
 }
 
-export function inverseMercatorY(y) {
-    const rad = 2 * Math.atan(Math.exp(y * Math.PI / 180)) - Math.PI / 2;
-    return rad * 180 / Math.PI;
+// [lon, lat] in degrees -> [x, y] in projected units, y positive north.
+export function project(lon, lat) {
+    const lam = (normaliseLon(lon) - CENTRAL_MERIDIAN) * Math.PI / 180;
+    const phi = Math.max(-90, Math.min(90, lat)) * Math.PI / 180;
+    const th = Math.asin(EE_M * Math.sin(phi));
+    const th2 = th * th, th6 = th2 * th2 * th2;
+    const x = lam * Math.cos(th) /
+        (EE_M * (EE_A1 + 3 * EE_A2 * th2 + th6 * (7 * EE_A3 + 9 * EE_A4 * th2)));
+    const y = th * (EE_A1 + EE_A2 * th2 + th6 * (EE_A3 + EE_A4 * th2));
+    return [x * PROJ_SCALE, y * PROJ_SCALE];
 }
 
-export const FRAME_LAT_MIN = -60, FRAME_LAT_MAX = 84;
-// Longitude runs -169..191 rather than -180..180: the world wraps at the Bering
-// Strait (open water) instead of through the middle of Russia.
-export const FRAME_LON_MIN = -169, FRAME_LON_MAX = 191;
-export const FRAME_BOUNDS = [[FRAME_LAT_MIN, FRAME_LON_MIN], [FRAME_LAT_MAX, FRAME_LON_MAX]];
+// The half-width of the world at one latitude. Equal Earth is a lens, not a
+// rectangle: this is what the parallels are drawn across, and what leaves the
+// corners of the frame empty.
+export function halfWidthAt(lat) {
+    return project(LON_MAX, lat)[0];
+}
 
-// ONE step for both grid directions, in projected units. Longitude degrees are
-// already unstretched, so this is 30 degrees of longitude horizontally;
-// vertically it is 30 units of PROJECTED y, deliberately not 30 degrees of
-// latitude. Stepping the parallels by a fixed number of degrees is what made
-// the spacing look wrong - the 60-to-80 band came out three times taller than
-// every other one, which reads as a missing line in the middle of it.
-export const GRID_STEP = 30;
-export const FRAME_BAND_THICKNESS = 1.6; // projected units, same scale as longitude degrees
+// ---------- the projected boundaries ----------
+// Projected once and memoised. Leaflet reads GeoJSON as [lng, lat] and, under
+// CRS.Simple, uses those numbers as plain x / y - so the projected pair goes
+// straight into the same slots.
+let projectedCache = null;
+
+export async function getProjectedFeatures() {
+    if (projectedCache) return projectedCache;
+    const features = await getGeoFeatures();
+    const mapCoords = c => (typeof c[0] === 'number')
+        ? project(c[0], c[1])
+        : c.map(mapCoords);
+    projectedCache = features.map(f => ({
+        type: 'Feature',
+        properties: f.properties,
+        geometry: { type: f.geometry.type, coordinates: mapCoords(f.geometry.coordinates) },
+    }));
+    return projectedCache;
+}
+
+// ---------- the frame ----------
+// Latitudes the map is drawn between. Equal Earth compresses the high
+// latitudes on its own, so this is now only about not leaving a band of empty
+// ocean at the bottom where Antarctica would have been.
+export const FRAME_LAT_MIN = -58, FRAME_LAT_MAX = 84;
+
+// A rectangle around the whole lens, with a little air. The world touches the
+// left and right bands only at the equator; above and below that the corners
+// are empty, which is what a pseudocylindrical map looks like in a rectangular
+// frame - and is the honest shape of the projection rather than a crop of it.
+const FRAME_PAD = 11;
+export const FRAME_X_MAX = 180 + FRAME_PAD;
+export const FRAME_X_MIN = -FRAME_X_MAX;
+export const FRAME_Y_MAX = project(CENTRAL_MERIDIAN, FRAME_LAT_MAX)[1] + FRAME_PAD;
+export const FRAME_Y_MIN = project(CENTRAL_MERIDIAN, FRAME_LAT_MIN)[1] - FRAME_PAD;
+
+// Leaflet bounds are [[lat, lng]] = [[y, x]] under CRS.Simple.
+export const FRAME_BOUNDS = [[FRAME_Y_MIN, FRAME_X_MIN], [FRAME_Y_MAX, FRAME_X_MAX]];
+
+export const FRAME_BAND_THICKNESS = 3.4; // projected units
 export const FRAME_STRIPE_LEN = 12;
+export const GRID_STEP = 30;             // degrees, for both parallels and meridians
 
-// Compass rose: centred exactly on a grid intersection, in open South Pacific
-// water. Both coordinates are DERIVED from the grid rather than written as
-// literals, so they cannot silently drift off an intersection if the grid step
-// changes. The latitude is whichever one the parallel at projected y =
-// -GRID_STEP falls on (about -28.7 degrees, near Easter Island) - it is NOT
-// -30 degrees, because the grid is spaced in projected space.
-export const COMPASS_CENTER_LAT = inverseMercatorY(-GRID_STEP);
-export const COMPASS_CENTER_LON = -4 * GRID_STEP; // -120
-export const COMPASS_HALF_SIZE = 11;
-export const COMPASS_BOUNDS = [
-    [COMPASS_CENTER_LAT - COMPASS_HALF_SIZE, COMPASS_CENTER_LON - COMPASS_HALF_SIZE],
-    [COMPASS_CENTER_LAT + COMPASS_HALF_SIZE, COMPASS_CENTER_LON + COMPASS_HALF_SIZE]
-];
+export const INNER_X_MIN = FRAME_X_MIN + FRAME_BAND_THICKNESS;
+export const INNER_X_MAX = FRAME_X_MAX - FRAME_BAND_THICKNESS;
+export const INNER_Y_MIN = FRAME_Y_MIN + FRAME_BAND_THICKNESS;
+export const INNER_Y_MAX = FRAME_Y_MAX - FRAME_BAND_THICKNESS;
 
-// Returns the projected-y positions of every parallel the grid should draw.
-// Exported so it can be asserted on directly in the tests.
-export function parallelYs() {
-    const yMin = mercatorY(FRAME_LAT_MIN), yMax = mercatorY(FRAME_LAT_MAX);
-    const yBottomLimit = yMin + FRAME_BAND_THICKNESS;
-    const yTopLimit = yMax - FRAME_BAND_THICKNESS;
-    const ys = [];
-    // k = 0 is the equator, so it is always a ruled line as on a real map, and
-    // every other parallel is a whole number of steps from it.
-    for (let k = Math.ceil(yBottomLimit / GRID_STEP); k * GRID_STEP < yTopLimit; k++) {
-        const y = k * GRID_STEP;
-        if (y <= yBottomLimit || y >= yTopLimit) continue;
-        ys.push(y);
+// Parallels are straight lines on any pseudocylindrical projection, so these
+// are plain latitudes at an even spacing - and unlike Mercator, an even
+// spacing in DEGREES is also an even spacing on screen here, which is what
+// went wrong the first time round (see the GRID_STEP history).
+export function parallelLats() {
+    const lats = [];
+    for (let lat = -90 + GRID_STEP; lat < 90; lat += GRID_STEP) {
+        if (lat <= FRAME_LAT_MIN || lat >= FRAME_LAT_MAX) continue;
+        lats.push(lat);
     }
-    return ys;
+    return lats;
 }
 
 export function meridianLons() {
-    const lonInnerLeft = FRAME_LON_MIN + FRAME_BAND_THICKNESS;
-    const lonInnerRight = FRAME_LON_MAX - FRAME_BAND_THICKNESS;
     const lons = [];
-    for (let lon = Math.ceil(FRAME_LON_MIN / GRID_STEP) * GRID_STEP; lon < FRAME_LON_MAX; lon += GRID_STEP) {
-        if (lon <= lonInnerLeft || lon >= lonInnerRight) continue;
+    for (let lon = Math.ceil(LON_MIN / GRID_STEP) * GRID_STEP; lon < LON_MAX; lon += GRID_STEP) {
+        if (lon <= LON_MIN || lon >= LON_MAX) continue;
         lons.push(lon);
     }
     return lons;
 }
 
-// Builds the striped border + lat/long grid as a Leaflet layerGroup.
-//
-// Rendered on its own SVG renderer rather than the shared canvas the country
-// polygons use. That was originally added while chasing a "grid line near the
-// pole is missing" report, on the theory that the canvas was dropping it - that
-// theory was wrong (the line was always drawn; the problem was spacing, see
-// GRID_STEP). It is kept because SVG renders these hairlines more crisply, and
-// ~40 elements is far too few for the canvas performance argument to apply.
+// A meridian is a CURVE here, so it is sampled rather than drawn as one
+// segment. Returns [[y, x], ...] ready for L.polyline under CRS.Simple.
+const MERIDIAN_SAMPLES = 32;
+export function meridianPath(lon) {
+    const pts = [];
+    for (let i = 0; i <= MERIDIAN_SAMPLES; i++) {
+        const lat = FRAME_LAT_MIN + (FRAME_LAT_MAX - FRAME_LAT_MIN) * i / MERIDIAN_SAMPLES;
+        const [x, y] = project(lon, lat);
+        pts.push([y, x]);
+    }
+    return pts;
+}
+
+// Each parallel stops at the edge of the lens rather than running on into the
+// empty corners.
+export function parallelPath(lat) {
+    const [, y] = project(CENTRAL_MERIDIAN, lat);
+    const w = halfWidthAt(lat);
+    return [[y, -w], [y, w]];
+}
+
+// Compass rose: on a real grid intersection, in open South Pacific water.
+export const COMPASS_CENTER_LON = -120;
+export const COMPASS_CENTER_LAT = -30;
+export const COMPASS_HALF_SIZE = 13;
+const COMPASS_XY = project(COMPASS_CENTER_LON, COMPASS_CENTER_LAT);
+export const COMPASS_BOUNDS = [
+    [COMPASS_XY[1] - COMPASS_HALF_SIZE, COMPASS_XY[0] - COMPASS_HALF_SIZE],
+    [COMPASS_XY[1] + COMPASS_HALF_SIZE, COMPASS_XY[0] + COMPASS_HALF_SIZE]
+];
+
+// Builds the striped border + graticule as a Leaflet layerGroup, in projected
+// units. Rendered on its own SVG renderer rather than the shared canvas the
+// country polygons use, because SVG renders these hairlines more crisply and
+// ~50 elements is far too few for the canvas performance argument to apply.
 export function buildMapFrame() {
     const frameRenderer = L.svg({ padding: 2 });
     const group = L.layerGroup();
     const lineStyle = { color: FRAME_COLOR, weight: 1, opacity: 0.8, interactive: false, fill: false, renderer: frameRenderer };
     const gridStyle = { color: FRAME_COLOR, weight: 0.6, opacity: 0.4, interactive: false, fill: false, renderer: frameRenderer };
 
-    function stripe(bounds, dark) {
-        L.rectangle(bounds, {
+    function stripe(y0, x0, y1, x1, dark) {
+        L.rectangle([[y0, x0], [y1, x1]], {
             color: FRAME_COLOR, weight: 1, opacity: 0.8,
             fillColor: dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, fillOpacity: dark ? 0.85 : 1,
             interactive: false, renderer: frameRenderer
         }).addTo(group);
     }
 
-    const yMin = mercatorY(FRAME_LAT_MIN), yMax = mercatorY(FRAME_LAT_MAX);
-    const latInnerTop = inverseMercatorY(yMax - FRAME_BAND_THICKNESS);
-    const latInnerBottom = inverseMercatorY(yMin + FRAME_BAND_THICKNESS);
-    const lonInnerLeft = FRAME_LON_MIN + FRAME_BAND_THICKNESS;
-    const lonInnerRight = FRAME_LON_MAX - FRAME_BAND_THICKNESS;
-
-    // Top and bottom bands: stripes evenly spaced in longitude - the x scale
-    // does not depend on latitude, so no correction is needed here.
-    const lonSpan = FRAME_LON_MAX - FRAME_LON_MIN;
-    const nHoriz = Math.max(4, Math.round(lonSpan / FRAME_STRIPE_LEN));
+    // Both directions are now plain projected units, so the stripes are evenly
+    // spaced without any correction - the whole reason the old code had to
+    // work in "projected space" was Mercator's stretching, which is gone.
+    const xSpan = FRAME_X_MAX - FRAME_X_MIN;
+    const nHoriz = Math.max(4, Math.round(xSpan / FRAME_STRIPE_LEN));
     for (let i = 0; i < nHoriz; i++) {
-        const lon0 = FRAME_LON_MIN + (lonSpan * i) / nHoriz;
-        const lon1 = FRAME_LON_MIN + (lonSpan * (i + 1)) / nHoriz;
+        const x0 = FRAME_X_MIN + (xSpan * i) / nHoriz;
+        const x1 = FRAME_X_MIN + (xSpan * (i + 1)) / nHoriz;
         const dark = i % 2 === 0;
-        stripe([[latInnerTop, lon0], [FRAME_LAT_MAX, lon1]], dark);
-        stripe([[FRAME_LAT_MIN, lon0], [latInnerBottom, lon1]], dark);
+        stripe(INNER_Y_MAX, x0, FRAME_Y_MAX, x1, dark);
+        stripe(FRAME_Y_MIN, x0, INNER_Y_MIN, x1, dark);
     }
-    // Left and right bands: stripes evenly spaced in PROJECTED y, so each
-    // covers the same visual length instead of growing near the poles.
-    const ySpan = yMax - yMin;
+    const ySpan = FRAME_Y_MAX - FRAME_Y_MIN;
     const nVert = Math.max(4, Math.round(ySpan / FRAME_STRIPE_LEN));
     for (let i = 0; i < nVert; i++) {
-        const lat0 = inverseMercatorY(yMin + (ySpan * i) / nVert);
-        const lat1 = inverseMercatorY(yMin + (ySpan * (i + 1)) / nVert);
+        const y0 = FRAME_Y_MIN + (ySpan * i) / nVert;
+        const y1 = FRAME_Y_MIN + (ySpan * (i + 1)) / nVert;
         const dark = i % 2 === 0;
-        stripe([[lat0, FRAME_LON_MIN], [lat1, lonInnerLeft]], dark);
-        stripe([[lat0, lonInnerRight], [lat1, FRAME_LON_MAX]], dark);
+        stripe(y0, FRAME_X_MIN, y1, INNER_X_MIN, dark);
+        stripe(y0, INNER_X_MAX, y1, FRAME_X_MAX, dark);
     }
 
     // Thin rule separating the striped border from the map content
     L.polyline([
-        [latInnerBottom, lonInnerLeft], [latInnerBottom, lonInnerRight],
-        [latInnerTop, lonInnerRight], [latInnerTop, lonInnerLeft],
-        [latInnerBottom, lonInnerLeft]
+        [INNER_Y_MIN, INNER_X_MIN], [INNER_Y_MIN, INNER_X_MAX],
+        [INNER_Y_MAX, INNER_X_MAX], [INNER_Y_MAX, INNER_X_MIN],
+        [INNER_Y_MIN, INNER_X_MIN]
     ], lineStyle).addTo(group);
 
-    meridianLons().forEach(lon => {
-        L.polyline([[latInnerBottom, lon], [latInnerTop, lon]], gridStyle).addTo(group);
-    });
-    parallelYs().forEach(y => {
-        const lat = inverseMercatorY(y);
-        L.polyline([[lat, lonInnerLeft], [lat, lonInnerRight]], gridStyle).addTo(group);
-    });
+    // The graticule follows the projection: curved meridians, straight
+    // parallels that stop at the edge of the lens instead of running out into
+    // the empty corners.
+    meridianLons().forEach(lon => L.polyline(meridianPath(lon), gridStyle).addTo(group));
+    parallelLats().forEach(lat => L.polyline(parallelPath(lat), gridStyle).addTo(group));
 
     return group;
 }
 
 // ---------- the map as a standalone SVG ----------
 // The exported file is opened without this app, so it cannot use Leaflet: the
-// cover map is drawn here from the same GeoJSON and the same Mercator maths the
-// live map uses, as plain SVG path data with the colours written in.
+// cover map is drawn here from the same projected boundaries and the same
+// frame geometry, as plain SVG with the colours written in.
 //
 // Coordinates are rounded to one decimal and points closer together than
 // SIMPLIFY_PX are dropped. On a 1100px-wide map that is invisible, and it is
-// the difference between a couple of megabytes of path data and a few hundred
+// the difference between a megabyte and a half of path data and a few hundred
 // kilobytes - which matters in a file that already carries every photo.
 const SIMPLIFY_PX = 0.6;
 
-function ringToPath(ring, px, py) {
+function ringToPath(ring, sx, sy) {
     let d = '';
     let lastX = null, lastY = null;
     for (let i = 0; i < ring.length; i++) {
-        const x = px(ring[i][0]);
-        const y = py(ring[i][1]);
+        const x = sx(ring[i][0]);
+        const y = sy(ring[i][1]);
         const keep = lastX === null ||
             Math.abs(x - lastX) >= SIMPLIFY_PX || Math.abs(y - lastY) >= SIMPLIFY_PX ||
             i === ring.length - 1;
@@ -233,28 +307,23 @@ function ringToPath(ring, px, py) {
     return d ? d + 'Z' : '';
 }
 
-function featurePath(geometry, px, py) {
+function featurePath(geometry, sx, sy) {
     const polys = geometry.type === 'Polygon' ? [geometry.coordinates]
         : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
-    return polys.map(rings => rings.map(r => ringToPath(r, px, py)).join('')).join('');
+    return polys.map(rings => rings.map(r => ringToPath(r, sx, sy)).join('')).join('');
 }
 
 // `fillFor(code)` returns { fill, opacity } for one country.
 export async function buildWorldSvg(fillFor, opts) {
     const width = (opts && opts.width) || 1100;
-    const features = await getGeoFeatures();
+    const features = await getProjectedFeatures();
 
-    const yMin = mercatorY(FRAME_LAT_MIN), yMax = mercatorY(FRAME_LAT_MAX);
-    const lonSpan = FRAME_LON_MAX - FRAME_LON_MIN;
-    const ySpan = yMax - yMin;
-    const height = Math.round(width * ySpan / lonSpan);
-
-    // The world wraps at the Bering Strait, so anything west of the left edge
-    // belongs on the right-hand side of this map, not off it.
-    const normLon = lon => (lon < FRAME_LON_MIN ? lon + 360 : lon);
-    const px = lon => ((normLon(lon) - FRAME_LON_MIN) / lonSpan) * width;
-    // Clamped before projecting: mercatorY(90) is infinite.
-    const py = lat => ((yMax - mercatorY(Math.max(-85, Math.min(85, lat)))) / ySpan) * height;
+    const xSpan = FRAME_X_MAX - FRAME_X_MIN;
+    const ySpan = FRAME_Y_MAX - FRAME_Y_MIN;
+    const height = Math.round(width * ySpan / xSpan);
+    const k = width / xSpan;
+    const sx = x => (x - FRAME_X_MIN) * k;
+    const sy = y => (FRAME_Y_MAX - y) * k;   // SVG y grows downwards
 
     let out = `<svg viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg" ` +
               `width="100%" role="img" aria-label="World map of this collection">`;
@@ -263,54 +332,45 @@ export async function buildWorldSvg(fillFor, opts) {
     features.forEach(f => {
         const code = getCodeForFeature(f);
         if (!code) return;
-        const d = featurePath(f.geometry, px, py);
+        const d = featurePath(f.geometry, sx, sy);
         if (!d) return;
         const style = fillFor(code) || {};
-        out += `<path d="${d}" fill="${style.fill || MUTED_COLOR}" fill-opacity="${style.opacity == null ? 0.18 : style.opacity}" ` +
+        out += `<path d="${d}" fill="${style.fill || MUTED_COLOR}" ` +
+               `fill-opacity="${style.opacity == null ? 0.18 : style.opacity}" ` +
                `stroke="${BORDER_COLOR}" stroke-width="0.5"/>`;
     });
 
-    // The grid, then the striped border on top of it - same geometry as the
-    // live map's frame, so the cover is recognisably the same picture.
-    const latInnerTop = inverseMercatorY(yMax - FRAME_BAND_THICKNESS);
-    const latInnerBottom = inverseMercatorY(yMin + FRAME_BAND_THICKNESS);
-    const lonInnerLeft = FRAME_LON_MIN + FRAME_BAND_THICKNESS;
-    const lonInnerRight = FRAME_LON_MAX - FRAME_BAND_THICKNESS;
-
+    const poly = pts => pts.map(([y, x]) => `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`).join(' ');
     out += `<g stroke="${FRAME_COLOR}" stroke-width="0.6" opacity="0.4" fill="none">`;
-    meridianLons().forEach(lon => {
-        out += `<line x1="${px(lon).toFixed(1)}" y1="${py(latInnerTop).toFixed(1)}" ` +
-               `x2="${px(lon).toFixed(1)}" y2="${py(latInnerBottom).toFixed(1)}"/>`;
-    });
-    parallelYs().forEach(y => {
-        const lat = inverseMercatorY(y);
-        out += `<line x1="${px(lonInnerLeft).toFixed(1)}" y1="${py(lat).toFixed(1)}" ` +
-               `x2="${px(lonInnerRight).toFixed(1)}" y2="${py(lat).toFixed(1)}"/>`;
-    });
+    meridianLons().forEach(lon => { out += `<polyline points="${poly(meridianPath(lon))}"/>`; });
+    parallelLats().forEach(lat => { out += `<polyline points="${poly(parallelPath(lat))}"/>`; });
     out += `</g>`;
 
-    const rect = (lat0, lon0, lat1, lon1, fill, opacity) => {
-        const x = px(lon0), y = py(lat1), w = px(lon1) - x, h = py(lat0) - y;
-        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.abs(w).toFixed(1)}" ` +
-               `height="${Math.abs(h).toFixed(1)}" fill="${fill}" fill-opacity="${opacity}" ` +
+    const rect = (y0, x0, y1, x1, fill, opacity) => {
+        const x = sx(Math.min(x0, x1)), y = sy(Math.max(y0, y1));
+        const w = Math.abs(sx(x1) - sx(x0)), h = Math.abs(sy(y0) - sy(y1));
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" ` +
+               `height="${h.toFixed(1)}" fill="${fill}" fill-opacity="${opacity}" ` +
                `stroke="${FRAME_COLOR}" stroke-width="0.8"/>`;
     };
 
-    const nHoriz = Math.max(4, Math.round(lonSpan / FRAME_STRIPE_LEN));
+    const nHoriz = Math.max(4, Math.round(xSpan / FRAME_STRIPE_LEN));
     for (let i = 0; i < nHoriz; i++) {
-        const lon0 = FRAME_LON_MIN + (lonSpan * i) / nHoriz;
-        const lon1 = FRAME_LON_MIN + (lonSpan * (i + 1)) / nHoriz;
+        const x0 = FRAME_X_MIN + (xSpan * i) / nHoriz;
+        const x1 = FRAME_X_MIN + (xSpan * (i + 1)) / nHoriz;
         const dark = i % 2 === 0;
-        out += rect(latInnerTop, lon0, FRAME_LAT_MAX, lon1, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
-        out += rect(FRAME_LAT_MIN, lon0, latInnerBottom, lon1, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
+        const fill = dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, op = dark ? 0.85 : 1;
+        out += rect(INNER_Y_MAX, x0, FRAME_Y_MAX, x1, fill, op);
+        out += rect(FRAME_Y_MIN, x0, INNER_Y_MIN, x1, fill, op);
     }
     const nVert = Math.max(4, Math.round(ySpan / FRAME_STRIPE_LEN));
     for (let i = 0; i < nVert; i++) {
-        const lat0 = inverseMercatorY(yMin + (ySpan * i) / nVert);
-        const lat1 = inverseMercatorY(yMin + (ySpan * (i + 1)) / nVert);
+        const y0 = FRAME_Y_MIN + (ySpan * i) / nVert;
+        const y1 = FRAME_Y_MIN + (ySpan * (i + 1)) / nVert;
         const dark = i % 2 === 0;
-        out += rect(lat0, FRAME_LON_MIN, lat1, lonInnerLeft, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
-        out += rect(lat0, lonInnerRight, lat1, FRAME_LON_MAX, dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, dark ? 0.85 : 1);
+        const fill = dark ? FRAME_COLOR : FRAME_LIGHT_COLOR, op = dark ? 0.85 : 1;
+        out += rect(y0, FRAME_X_MIN, y1, INNER_X_MIN, fill, op);
+        out += rect(y0, INNER_X_MAX, y1, FRAME_X_MAX, fill, op);
     }
 
     out += '</svg>';
