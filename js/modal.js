@@ -4,7 +4,10 @@ import { state } from './state.js';
 import { COUNTRY_NAMES, filterEntry } from './countries.js';
 import { applyOrder, describeError } from './util.js';
 import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
-import { getCountryLayout, saveLayoutsToDrive, markLayoutDirty, propagateSharedLayout } from './layouts.js';
+import {
+    getCountryLayout, saveLayoutsToDrive, markLayoutDirty, propagateSharedLayout,
+    uncategorizedLabel, DEFAULT_SECTION_NAME
+} from './layouts.js';
 import { buildCountryExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, showProgressDialog } from './dialog.js';
 
@@ -19,6 +22,10 @@ let shareSelectMode = false;
 let organizeMode = false;
 let draftCategories = [];
 let draftUncategorizedOrder = [];
+let draftUncategorizedName = '';
+// Which section's name is being typed into. A category is its index; the
+// default section is -1, the same number that already means "uncategorized"
+// everywhere else in this file (see moveImageDirection).
 let editingCategoryIndex = null;
 
 const HEADING_STYLE = 'color:var(--text-dim);font-size:14px;font-weight:normal;margin:16px 0 8px 0;text-align:center;border-top:1px solid var(--border);padding-top:12px;';
@@ -146,6 +153,78 @@ function reorderWithin(categoryIndex, pos, direction) {
     renderModalContent(currentModalCode);
 }
 
+// The name row for one section, used for the categories AND for the default
+// section that holds everything not filed into one. They were different things
+// - a category had a pencil and an editable name, the default section had the
+// word "Uncategorized" written into the markup - so the one section people
+// actually wanted to name was the only one that could not be.
+function buildSectionHeader(opts) {
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;' +
+        'margin:18px 0 6px 0;border-top:1px solid var(--border);padding-top:12px;';
+
+    const nameContainer = document.createElement('div');
+    nameContainer.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;min-width:140px;';
+
+    const finishEditing = () => {
+        editingCategoryIndex = null;
+        renderModalContent(currentModalCode);
+    };
+
+    if (editingCategoryIndex === opts.index) {
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = opts.name || '';
+        nameInput.placeholder = opts.fallback;
+        nameInput.setAttribute('aria-label', 'Section name');
+        nameInput.style.cssText = 'flex:1;min-width:120px;padding:6px 8px;border-radius:6px;' +
+            'border:1px solid var(--border);background:var(--panel-alt);color:var(--text);font-size:14px;';
+        nameInput.oninput = () => opts.onChange(nameInput.value);
+        nameInput.onkeydown = e => { if (e.key === 'Enter') finishEditing(); };
+        nameContainer.appendChild(nameInput);
+
+        const saveBtn = document.createElement('button');
+        saveBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>';
+        saveBtn.title = 'Save name';
+        saveBtn.setAttribute('aria-label', 'Save section name');
+        saveBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--accent-owned);' +
+            'cursor:pointer;padding:2px;display:flex;width:auto;margin:0;';
+        saveBtn.onclick = finishEditing;
+        nameContainer.appendChild(saveBtn);
+    } else {
+        const nameLabel = document.createElement('span');
+        const shown = (opts.name && opts.name.trim()) ? opts.name.trim() : opts.fallback;
+        nameLabel.textContent = shown;
+        nameLabel.style.cssText = 'flex:1;min-width:60px;font-size:14px;color:var(--text);' +
+            'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        nameContainer.appendChild(nameLabel);
+
+        const editBtn = document.createElement('button');
+        editBtn.innerHTML = '&#9998;';
+        editBtn.title = 'Rename';
+        editBtn.setAttribute('aria-label', 'Rename ' + shown);
+        editBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--text-dim);' +
+            'cursor:pointer;font-size:13px;padding:2px;width:auto;margin:0;';
+        editBtn.onclick = () => { editingCategoryIndex = opts.index; renderModalContent(currentModalCode); };
+        nameContainer.appendChild(editBtn);
+    }
+    header.appendChild(nameContainer);
+
+    // The default section cannot be deleted - it is where everything not in a
+    // category lives, so there is nowhere for its photos to go.
+    if (opts.onDelete) {
+        const delBtn = document.createElement('button');
+        delBtn.innerHTML = '&#128465;';
+        delBtn.title = 'Delete category (images become uncategorized)';
+        delBtn.setAttribute('aria-label', 'Delete category');
+        delBtn.style.cssText = 'flex-shrink:0;width:26px;height:26px;padding:0;margin:0;background:transparent;' +
+            'border:1px solid var(--border);color:var(--accent-none);border-radius:4px;cursor:pointer;';
+        delBtn.onclick = opts.onDelete;
+        header.appendChild(delBtn);
+    }
+    return header;
+}
+
 function renderOrganizeSection(uncategorizedRaw, allOwnImages) {
     const container = modalImages;
     const uncategorized = applyOrder(draftUncategorizedOrder, uncategorizedRaw);
@@ -206,14 +285,18 @@ function renderOrganizeSection(uncategorizedRaw, allOwnImages) {
         return wrapper;
     }
 
+    // The default section is renamed with exactly the same control as any
+    // other, so there is nothing to learn twice - and it is offered even
+    // before a category exists, so the name is ready when one is added.
+    container.appendChild(buildSectionHeader({
+        index: -1,
+        name: draftUncategorizedName,
+        fallback: DEFAULT_SECTION_NAME,
+        onChange: value => { draftUncategorizedName = value; },
+    }));
+
     const uncatWrap = document.createElement('div');
     uncatWrap.style.cssText = 'text-align:center;';
-    if (draftCategories.length > 0) {
-        const uncatHeading = document.createElement('h3');
-        uncatHeading.textContent = 'Uncategorized';
-        uncatHeading.style.cssText = HEADING_STYLE;
-        container.appendChild(uncatHeading);
-    }
     uncategorized.forEach((img, pos) => uncatWrap.appendChild(imageCell(img, -1, pos, uncategorized.length)));
     if (uncategorized.length === 0 && draftCategories.length > 0) {
         const empty = document.createElement('p');
@@ -224,60 +307,20 @@ function renderOrganizeSection(uncategorizedRaw, allOwnImages) {
     container.appendChild(uncatWrap);
 
     draftCategories.forEach((cat, catIdx) => {
-        const header = document.createElement('div');
-        header.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 0 6px 0;border-top:1px solid var(--border);padding-top:12px;';
-
-        const nameContainer = document.createElement('div');
-        nameContainer.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;min-width:140px;';
-
-        if (editingCategoryIndex === catIdx) {
-            const nameInput = document.createElement('input');
-            nameInput.type = 'text';
-            nameInput.value = cat.name;
-            nameInput.setAttribute('aria-label', 'Category name');
-            nameInput.style.cssText = 'flex:1;min-width:120px;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:var(--panel-alt);color:var(--text);font-size:14px;';
-            nameInput.oninput = () => { cat.name = nameInput.value; };
-            nameInput.onkeydown = e => {
-                if (e.key === 'Enter') { editingCategoryIndex = null; renderModalContent(currentModalCode); }
-            };
-            nameContainer.appendChild(nameInput);
-
-            const saveBtn = document.createElement('button');
-            saveBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>';
-            saveBtn.title = 'Save name';
-            saveBtn.setAttribute('aria-label', 'Save category name');
-            saveBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--accent-owned);cursor:pointer;padding:2px;display:flex;width:auto;margin:0;';
-            saveBtn.onclick = () => { editingCategoryIndex = null; renderModalContent(currentModalCode); };
-            nameContainer.appendChild(saveBtn);
-        } else {
-            const nameLabel = document.createElement('span');
-            nameLabel.textContent = cat.name && cat.name.trim() ? cat.name : 'Untitled category';
-            nameLabel.style.cssText = 'flex:1;min-width:60px;font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-            nameContainer.appendChild(nameLabel);
-
-            const editBtn = document.createElement('button');
-            editBtn.innerHTML = '&#9998;';
-            editBtn.title = 'Rename';
-            editBtn.setAttribute('aria-label', 'Rename category');
-            editBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:13px;padding:2px;width:auto;margin:0;';
-            editBtn.onclick = () => { editingCategoryIndex = catIdx; renderModalContent(currentModalCode); };
-            nameContainer.appendChild(editBtn);
-        }
-        header.appendChild(nameContainer);
-
-        const delBtn = document.createElement('button');
-        delBtn.innerHTML = '&#128465;';
-        delBtn.title = 'Delete category (images become uncategorized)';
-        delBtn.setAttribute('aria-label', 'Delete category');
-        delBtn.style.cssText = 'flex-shrink:0;width:26px;height:26px;padding:0;margin:0;background:transparent;border:1px solid var(--border);color:var(--accent-none);border-radius:4px;cursor:pointer;';
-        delBtn.onclick = () => {
-            draftUncategorizedOrder = draftUncategorizedOrder.concat(cat.imageIds);
-            draftCategories.splice(catIdx, 1);
-            if (editingCategoryIndex === catIdx) editingCategoryIndex = null;
-            renderModalContent(currentModalCode);
-        };
-        header.appendChild(delBtn);
+        const header = buildSectionHeader({
+            index: catIdx,
+            name: cat.name,
+            fallback: 'Untitled category',
+            onChange: value => { cat.name = value; },
+            onDelete: () => {
+                draftUncategorizedOrder = draftUncategorizedOrder.concat(cat.imageIds);
+                draftCategories.splice(catIdx, 1);
+                if (editingCategoryIndex === catIdx) editingCategoryIndex = null;
+                renderModalContent(currentModalCode);
+            },
+        });
         container.appendChild(header);
+
 
         const catWrap = document.createElement('div');
         catWrap.style.cssText = 'text-align:center;';
@@ -325,7 +368,9 @@ function renderModalContent(code) {
     if (uncategorized.length > 0) {
         if (categories.length > 0) {
             const heading = document.createElement('h3');
-            heading.textContent = 'Uncategorized';
+            heading.textContent = organizeMode
+                ? (draftUncategorizedName.trim() || DEFAULT_SECTION_NAME)
+                : uncategorizedLabel(getCountryLayout(code));
             heading.style.cssText = HEADING_STYLE;
             modalImages.appendChild(heading);
         }
@@ -411,6 +456,7 @@ export function initModal() {
         const layout = getCountryLayout(currentModalCode);
         draftCategories = JSON.parse(JSON.stringify(layout.categories));
         draftUncategorizedOrder = JSON.parse(JSON.stringify(layout.uncategorizedOrder));
+        draftUncategorizedName = layout.uncategorizedName || '';
         editingCategoryIndex = null;
         organizeMode = true;
         updateHeaderIcons();
@@ -428,6 +474,7 @@ export function initModal() {
         const layout = getCountryLayout(currentModalCode);
         layout.categories = draftCategories;
         layout.uncategorizedOrder = draftUncategorizedOrder;
+        layout.uncategorizedName = draftUncategorizedName.trim();
         markLayoutDirty(currentModalCode);
         // Notes shared with other countries take this arrangement with them,
         // so a currency group only has to be organised once.

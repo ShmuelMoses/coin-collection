@@ -4,7 +4,7 @@
 import { escapeHtml, blobToBase64, applyOrder } from './util.js';
 import { fetchFullImageBlob, resizeImageBlob } from './cache.js';
 import { COUNTRY_NAMES, filterEntry, kindCounts, KIND_BANKNOTE, KIND_COIN } from './countries.js';
-import { getCountryLayout } from './layouts.js';
+import { getCountryLayout, uncategorizedLabel } from './layouts.js';
 import { buildWorldSvg } from './geo.js';
 import { OWNED_COLOR, NONE_COLOR } from './config.js';
 import { state } from './state.js';
@@ -71,7 +71,10 @@ export function orderedGroupsFor(code) {
 
     const groups = [];
     if (uncategorized.length > 0) {
-        groups.push({ heading: layout.categories.length > 0 ? 'Uncategorized' : null, images: uncategorized });
+        groups.push({
+            heading: layout.categories.length > 0 ? uncategorizedLabel(layout) : null,
+            images: uncategorized
+        });
     }
     layout.categories.forEach(cat => {
         const imgs = cat.imageIds.map(id => entry.own.find(i => i.id === id)).filter(Boolean);

@@ -914,6 +914,57 @@ console.log('\nNavigation (popstate)');
     check('the suppress flag is cleared again', state.state.suppressNextPopstate === false);
 }
 
+console.log('\nThe default section can be named');
+{
+    const layouts2 = await import('./js/layouts.js');
+    const exp3 = await import('./js/export.js');
+    const fs = await import('node:fs');
+    const modaljs = fs.readFileSync('./js/modal.js', 'utf8');
+
+    state.state.currentCollectionId = 'colName';
+    state.state.cvCountryMap = countries.buildCountryMap([
+        { code: 'FRA', images: [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }] },
+    ]);
+    state.state.collectionData = { FRA: { count: 2 } };
+    layouts2.resetLayouts();
+
+    const layout = layouts2.getCountryLayout('FRA');
+    check('a layout carries a name for its default section',
+        typeof layout.uncategorizedName === 'string');
+    check('which reads as "Uncategorized" until it is given one',
+        layouts2.uncategorizedLabel(layout) === 'Uncategorized');
+
+    layout.uncategorizedName = '  Banque de France  ';
+    check('and as whatever it is named once it has one',
+        layouts2.uncategorizedLabel(layout) === 'Banque de France',
+        'the name is not trimmed or not used');
+    layout.uncategorizedName = '   ';
+    check('whitespace alone is not a name',
+        layouts2.uncategorizedLabel(layout) === 'Uncategorized');
+
+    // The name has to reach the exported book too, not just the screen.
+    layout.uncategorizedName = 'Main series';
+    layout.categories = [{ name: 'Commemoratives', imageIds: ['b'] }];
+    const groups = exp3.orderedGroupsFor('FRA');
+    check('the exported file uses the name as the section heading',
+        groups.some(g => g.heading === 'Main series'),
+        JSON.stringify(groups.map(g => g.heading)));
+    check('and the word "Uncategorized" is no longer written into the code',
+        !/'Uncategorized'/.test(modaljs),
+        'the one section people want to name was the only one hard-coded');
+
+    // One control for every section, so there is nothing to learn twice.
+    check('the default section is renamed with the same control as a category',
+        /function buildSectionHeader/.test(modaljs) &&
+        (modaljs.match(/buildSectionHeader\(\{/g) || []).length === 2,
+        'the rename UI is built twice, so the two can drift apart');
+    check('the default section has no delete button - there is nowhere for its photos to go',
+        /if \(opts\.onDelete\)/.test(modaljs));
+
+    layouts2.resetLayouts();
+    state.state.currentCollectionId = null;
+}
+
 console.log('\nCurrency merge (regression)');
 const groups = drive.parseCurrencyGroups('# comment\nEUR: FRA, DEU\n\nbad line\n');
 check('config parses', JSON.stringify(groups) === '{"EUR":["FRA","DEU"]}', JSON.stringify(groups));

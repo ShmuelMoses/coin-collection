@@ -50,7 +50,24 @@ export function getCountryLayout(code) {
     const perCollection = data[state.currentCollectionId];
     if (!perCollection[code]) perCollection[code] = { categories: [], uncategorizedOrder: [] };
     if (!perCollection[code].uncategorizedOrder) perCollection[code].uncategorizedOrder = [];
+    // Older layouts have no name for the default section; an empty string means
+    // "not named yet" and reads as the fallback below.
+    if (typeof perCollection[code].uncategorizedName !== 'string') {
+        perCollection[code].uncategorizedName = '';
+    }
     return perCollection[code];
+}
+
+// The section holding everything that has not been put in a category. It was
+// always labelled "Uncategorized", which describes the app's data model rather
+// than the contents - and it is usually the main run of a country's notes, not
+// the leftovers. It can now be named like any other section; the label below is
+// only what it falls back to.
+export const DEFAULT_SECTION_NAME = 'Uncategorized';
+
+export function uncategorizedLabel(layout) {
+    const name = layout && layout.uncategorizedName;
+    return (name && name.trim()) ? name.trim() : DEFAULT_SECTION_NAME;
 }
 
 // layouts.json used to be read once per page load and written back WHOLE, so a
