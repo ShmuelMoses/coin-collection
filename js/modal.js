@@ -28,6 +28,15 @@ let draftUncategorizedName = '';
 // everywhere else in this file (see moveImageDirection).
 let editingCategoryIndex = null;
 
+// The tick, the pencil and the bin were 16px icons with 2px of padding, so
+// only a ~20px square actually took the click and the edges of the button did
+// nothing. 32px is a real target, and centring the icon means every pixel of
+// it counts rather than just the glyph.
+const ICON_BTN_STYLE =
+    'flex-shrink:0;width:32px;height:32px;padding:0;margin:0;' +
+    'display:flex;align-items:center;justify-content:center;' +
+    'background:transparent;border:none;cursor:pointer;line-height:1;';
+
 const HEADING_STYLE = 'color:var(--text-dim);font-size:14px;font-weight:normal;margin:16px 0 8px 0;text-align:center;border-top:1px solid var(--border);padding-top:12px;';
 
 export function isModalOpen() { return modal.style.display === 'block'; }
@@ -153,6 +162,44 @@ function reorderWithin(categoryIndex, pos, direction) {
     renderModalContent(currentModalCode);
 }
 
+// Writes the draft to the layout and saves it. A tick means SAVED, wherever it
+// is pressed: the tick beside a section name used to do nothing but close the
+// text box, so a rename typed there was lost unless the top tick was pressed as
+// well - and nothing said so. `exit` is what separates the two: the top tick
+// finishes organising, a section's tick saves and leaves you in it.
+//
+// Saving the whole draft rather than just the name is deliberate. A tick that
+// saved only the name would leave the arrangement unsaved behind it, so Cancel
+// would then discard half of what was on screen and keep the other half.
+async function commitOrganize(opts) {
+    const exit = !!(opts && opts.exit);
+    const code = currentModalCode;
+    const layout = getCountryLayout(code);
+    layout.categories = draftCategories;
+    layout.uncategorizedOrder = draftUncategorizedOrder;
+    layout.uncategorizedName = draftUncategorizedName.trim();
+    markLayoutDirty(code);
+    // Notes shared with other countries take this arrangement with them, so a
+    // currency group only has to be organised once.
+    const alsoChanged = propagateSharedLayout(code);
+    if (alsoChanged.length) {
+        console.log(`[layout] shared notes re-ordered in ${alsoChanged.length} other ` +
+                    `countr${alsoChanged.length === 1 ? 'y' : 'ies'}: ${alsoChanged.join(', ')}`);
+    }
+    try {
+        await saveLayoutsToDrive();
+    } catch (err) {
+        console.error('Could not save categories:', err);
+        await alertDialog(describeError(err, 'Those categories could not be saved'), 'Save failed');
+        return false; // stay in organise mode so the work isn't lost
+    }
+    if (exit) organizeMode = false;
+    editingCategoryIndex = null;
+    updateHeaderIcons();
+    renderModalContent(code);
+    return true;
+}
+
 // The name row for one section, used for the categories AND for the default
 // section that holds everything not filed into one. They were different things
 // - a category had a pencil and an editable name, the default section had the
@@ -166,10 +213,10 @@ function buildSectionHeader(opts) {
     const nameContainer = document.createElement('div');
     nameContainer.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1;min-width:140px;';
 
-    const finishEditing = () => {
-        editingCategoryIndex = null;
-        renderModalContent(currentModalCode);
-    };
+    // Saves, rather than just closing the text box. Not awaited by the click
+    // handlers: commitOrganize re-renders when it is done, and the name is
+    // already in the draft, so the row updates immediately either way.
+    const finishEditing = () => { commitOrganize({ exit: false }); };
 
     if (editingCategoryIndex === opts.index) {
         const nameInput = document.createElement('input');
@@ -187,8 +234,7 @@ function buildSectionHeader(opts) {
         saveBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 12 9 17 20 6"/></svg>';
         saveBtn.title = 'Save name';
         saveBtn.setAttribute('aria-label', 'Save section name');
-        saveBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--accent-owned);' +
-            'cursor:pointer;padding:2px;display:flex;width:auto;margin:0;';
+        saveBtn.style.cssText = ICON_BTN_STYLE + 'color:var(--accent-owned);';
         saveBtn.onclick = finishEditing;
         nameContainer.appendChild(saveBtn);
     } else {
@@ -203,8 +249,7 @@ function buildSectionHeader(opts) {
         editBtn.innerHTML = '&#9998;';
         editBtn.title = 'Rename';
         editBtn.setAttribute('aria-label', 'Rename ' + shown);
-        editBtn.style.cssText = 'flex-shrink:0;background:transparent;border:none;color:var(--text-dim);' +
-            'cursor:pointer;font-size:13px;padding:2px;width:auto;margin:0;';
+        editBtn.style.cssText = ICON_BTN_STYLE + 'color:var(--text-dim);font-size:15px;';
         editBtn.onclick = () => { editingCategoryIndex = opts.index; renderModalContent(currentModalCode); };
         nameContainer.appendChild(editBtn);
     }
@@ -217,8 +262,8 @@ function buildSectionHeader(opts) {
         delBtn.innerHTML = '&#128465;';
         delBtn.title = 'Delete category (images become uncategorized)';
         delBtn.setAttribute('aria-label', 'Delete category');
-        delBtn.style.cssText = 'flex-shrink:0;width:26px;height:26px;padding:0;margin:0;background:transparent;' +
-            'border:1px solid var(--border);color:var(--accent-none);border-radius:4px;cursor:pointer;';
+        delBtn.style.cssText = ICON_BTN_STYLE +
+            'color:var(--accent-none);border:1px solid var(--border);border-radius:4px;';
         delBtn.onclick = opts.onDelete;
         header.appendChild(delBtn);
     }
@@ -470,31 +515,7 @@ export function initModal() {
         renderModalContent(currentModalCode);
     };
 
-    document.getElementById('organize-confirm-icon-btn').onclick = async () => {
-        const layout = getCountryLayout(currentModalCode);
-        layout.categories = draftCategories;
-        layout.uncategorizedOrder = draftUncategorizedOrder;
-        layout.uncategorizedName = draftUncategorizedName.trim();
-        markLayoutDirty(currentModalCode);
-        // Notes shared with other countries take this arrangement with them,
-        // so a currency group only has to be organised once.
-        const alsoChanged = propagateSharedLayout(currentModalCode);
-        if (alsoChanged.length) {
-            console.log(`[layout] shared notes re-ordered in ${alsoChanged.length} other ` +
-                        `countr${alsoChanged.length === 1 ? 'y' : 'ies'}: ${alsoChanged.join(', ')}`);
-        }
-        try {
-            await saveLayoutsToDrive();
-        } catch (err) {
-            console.error('Could not save categories:', err);
-            await alertDialog(describeError(err, 'Those categories could not be saved'), 'Save failed');
-            return; // stay in organise mode so the work isn't lost
-        }
-        organizeMode = false;
-        editingCategoryIndex = null;
-        updateHeaderIcons();
-        renderModalContent(currentModalCode);
-    };
+    document.getElementById('organize-confirm-icon-btn').onclick = () => commitOrganize({ exit: true });
 
     document.getElementById('share-confirm-icon-btn').onclick = async () => {
         const code = currentModalCode;

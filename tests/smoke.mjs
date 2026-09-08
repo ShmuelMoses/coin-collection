@@ -965,6 +965,67 @@ console.log('\nThe default section can be named');
     state.state.currentCollectionId = null;
 }
 
+console.log('\nScotland and Northern Ireland, and the rename tick');
+{
+    const fs = await import('node:fs');
+    const world = JSON.parse(fs.readFileSync('./countries.geojson', 'utf8'));
+    const modaljs = fs.readFileSync('./js/modal.js', 'utf8');
+    const byCode = c => world.features.find(f => f.properties['ISO3166-1-Alpha-3'] === c);
+
+    const sct = byCode('SCT'), nir = byCode('NIR'), gbr = byCode('GBR');
+    check('Scotland has a shape on the map', !!sct);
+    check('and so does Northern Ireland', !!nir);
+    check('they carry the same property shape as every other feature', (() => {
+        // Germany, not France: France is one of the features with no ISO code
+        // in this file and is rescued by name, so it is not a fair template.
+        const want = JSON.stringify(Object.keys(byCode('DEU').properties).sort());
+        return JSON.stringify(Object.keys(sct.properties).sort()) === want &&
+               JSON.stringify(Object.keys(nir.properties).sort()) === want;
+    })(), 'getCodeForFeature reads ISO3166-1-Alpha-3 and the labels read name');
+    check('their names are spelled out, not abbreviated',
+        sct.properties.name === 'Scotland' && nir.properties.name === 'Northern Ireland',
+        nir.properties.name);
+
+    // The UK polygon used to cover the whole of Great Britain and NI. Left as
+    // it was, Scotland would be painted twice - once by GBR underneath and once
+    // by SCT on top - and would come out a different shade from England.
+    const northOf = f => {
+        let max = -90;
+        const walk = c => { if (typeof c[0] === 'number') { if (c[1] > max) max = c[1]; return; } c.forEach(walk); };
+        walk(f.geometry.coordinates);
+        return max;
+    };
+    check('the United Kingdom polygon stops at the Scottish border',
+        northOf(gbr) < 56.5 && northOf(sct) > 58,
+        `UK reaches ${northOf(gbr).toFixed(1)}N, Scotland ${northOf(sct).toFixed(1)}N`);
+    check('and no longer reaches across the Irish Sea', (() => {
+        let minLon = 180;
+        const walk = c => { if (typeof c[0] === 'number') { if (c[0] < minLon) minLon = c[0]; return; } c.forEach(walk); };
+        walk(gbr.geometry.coordinates);
+        return minLon > -6.5;   // Northern Ireland starts around -8.1
+    })(), 'the UK still covers Northern Ireland, so NIR would be double-painted');
+
+    // The tick beside a section name used to close the text box and nothing
+    // else, so a rename typed there was lost unless the TOP tick was pressed
+    // as well - and nothing on screen said so.
+    check('the tick beside a section name saves, rather than only closing the box',
+        /const finishEditing = \(\) => \{ commitOrganize\(\{ exit: false \}\); \};/.test(modaljs),
+        'it only cleared editingCategoryIndex and re-rendered');
+    check('both ticks go through one save, so they cannot drift apart',
+        /async function commitOrganize/.test(modaljs) &&
+        (modaljs.match(/commitOrganize\(\{ exit: (true|false) \}\)/g) || []).length === 2);
+    check('the section tick keeps you in organize mode; only the top one leaves',
+        /if \(exit\) organizeMode = false;/.test(modaljs));
+
+    // The tick, pencil and bin were 16px icons with 2px of padding, so only a
+    // ~20px square actually took the click.
+    check('the small icon buttons have a real hit area',
+        /width:32px;height:32px/.test(modaljs) && /ICON_BTN_STYLE/.test(modaljs),
+        'the edges of the button did nothing');
+    check('and the icon is centred in it, so every pixel counts',
+        /align-items:center;justify-content:center/.test(modaljs));
+}
+
 console.log('\nCurrency merge (regression)');
 const groups = drive.parseCurrencyGroups('# comment\nEUR: FRA, DEU\n\nbad line\n');
 check('config parses', JSON.stringify(groups) === '{"EUR":["FRA","DEU"]}', JSON.stringify(groups));
