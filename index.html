@@ -312,15 +312,37 @@
         .modal-header-left { justify-content: flex-start; }
         .modal-header-right { justify-content: flex-end; }
         #share-icon-btn, #share-confirm-icon-btn, #share-cancel-icon-btn,
-        #organize-icon-btn, #organize-confirm-icon-btn, #organize-cancel-icon-btn {
+        #organize-icon-btn, #organize-confirm-icon-btn, #organize-cancel-icon-btn,
+        #auto-arrange-btn {
             width: auto; padding: 0; margin: 0; background: transparent; border: none;
             color: var(--accent-owned); cursor: pointer; display: flex; align-items: center;
         }
         #share-cancel-icon-btn, #organize-cancel-icon-btn { color: var(--accent-none); }
-        #organize-icon-btn { color: var(--text-dim); }
+        #organize-icon-btn, #auto-arrange-btn { color: var(--text-dim); }
+        #auto-arrange-btn:hover { opacity: 0.75; }
         #share-icon-btn:hover, #share-confirm-icon-btn:hover,
         #organize-icon-btn:hover, #organize-confirm-icon-btn:hover { opacity: 0.75; }
         #modal-images { display: block; }
+        /* The auto-arrange proposal: what it worked out, before anything is
+           saved. Deliberately plain - it is a thing to read and judge. */
+        .proposal-note {
+            font-size: 13px; color: var(--text-dim); line-height: 1.6;
+            margin: 0 0 14px 0; text-align: left;
+        }
+        .proposal-head {
+            display: flex; align-items: center; gap: 8px;
+            margin: 18px 0 6px 0; border-top: 1px solid var(--border); padding-top: 12px;
+        }
+        .proposal-head input {
+            flex: 1; min-width: 120px; padding: 6px 8px; border-radius: 6px;
+            border: 1px solid var(--border); background: var(--panel-alt);
+            color: var(--text); font-size: 14px; font-family: inherit;
+        }
+        .proposal-head .count { flex: 0 0 auto; font-size: 12px; color: var(--text-dim); }
+        .proposal-unsure {
+            margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border);
+            font-size: 12px; color: var(--text-dim); text-align: left;
+        }
         /* Thumbnail grid: the column count comes from the space available, not
            from the number of photos. It used to be min(5, ceil(sqrt(n))), which
            capped a 40-note country at 5 columns on any screen and left most of a
@@ -544,6 +566,9 @@
         <div id="modal">
             <div id="modal-header">
                 <div class="modal-header-side modal-header-left">
+                    <button id="auto-arrange-btn" data-tip="Suggest categories by date range" aria-label="Suggest categories by date range">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v4M3 5h4M6 17v4M4 19h4"/><path d="M13 3 15.5 9.5 22 12l-6.5 2.5L13 21l-2.5-6.5L4 12l6.5-2.5Z"/></svg>
+                    </button>
                     <button id="organize-icon-btn" data-tip="Organize into categories" aria-label="Organize into categories">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                     </button>

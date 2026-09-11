@@ -74,6 +74,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cv-main', 'map', 'list-view',
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
+    'auto-arrange-btn',
     'share-icon-btn', 'share-confirm-icon-btn', 'share-cancel-icon-btn',
     'enlarge-overlay', 'enlarge-img',
     'cache-modal-backdrop', 'cache-modal', 'cache-modal-stats', 'cache-modal-actions',
@@ -141,6 +142,9 @@ Object.defineProperty(global, 'navigator', {
 global.requestAnimationFrame = fn => setTimeout(() => fn(Date.now()), 8);
 global.cancelAnimationFrame = h => clearTimeout(h);
 global.URL.createObjectURL = () => 'blob:stub';
+global.FileReader = class {
+    readAsDataURL() { setTimeout(() => { this.result = 'data:image/jpeg;base64,QUJD'; this.onload && this.onload(); }, 0); }
+};
 global.URL.revokeObjectURL = () => {};
 global.DOMParser = class { parseFromString() { return { documentElement: new El('svg') }; } };
 // A small in-memory IndexedDB. The previous stub simply failed to open, so the
@@ -1011,9 +1015,13 @@ console.log('\nScotland and Northern Ireland, and the rename tick');
     check('the tick beside a section name saves, rather than only closing the box',
         /const finishEditing = \(\) => \{ commitOrganize\(\{ exit: false \}\); \};/.test(modaljs),
         'it only cleared editingCategoryIndex and re-rendered');
-    check('both ticks go through one save, so they cannot drift apart',
+    // Counting the call sites was brittle - accepting an auto-arrange proposal
+    // legitimately adds one. What matters is that there is only ONE place that
+    // writes the layout and saves it, so the paths cannot drift apart.
+    check('every tick goes through one save, so they cannot drift apart',
         /async function commitOrganize/.test(modaljs) &&
-        (modaljs.match(/commitOrganize\(\{ exit: (true|false) \}\)/g) || []).length === 2);
+        (modaljs.match(/saveLayoutsToDrive\(\)/g) || []).length === 1,
+        'more than one place in modal.js saves the layout');
     check('the section tick keeps you in organize mode; only the top one leaves',
         /if \(exit\) organizeMode = false;/.test(modaljs));
 
@@ -1024,6 +1032,163 @@ console.log('\nScotland and Northern Ireland, and the rename tick');
         'the edges of the button did nothing');
     check('and the icon is centred in it, so every pixel counts',
         /align-items:center;justify-content:center/.test(modaljs));
+}
+
+console.log('\nAuto arrange: naming and grouping');
+{
+    const aa = await import('./js/autoarrange.js');
+
+    // The name carries the date range and NOTHING else, by request.
+    check('a closed range reads as two years', aa.rangeName(1985, 2000) === '1985 - 2000');
+    check('a series still in circulation is left open, not filled in with a word',
+        aa.rangeName(1985, 0) === '1985 -', aa.rangeName(1985, 0));
+    check('one year in and out is not written twice', aa.rangeName(1999, 1999) === '1999');
+    check('no dates at all is no name', aa.rangeName(0, 0) === '');
+    check('the name is only digits and a dash',
+        /^[0-9 \-]+$/.test(aa.rangeName(1985, 2000)) && /^[0-9 \-]+$/.test(aa.rangeName(1985, 0)));
+
+    // The range is the SERIES', widened across its denominations: earliest in,
+    // latest out. Three notes of one series, issued and withdrawn separately.
+    const g1 = aa.groupIntoCategories([
+        { id: 'a', series: 'IL 3rd', issued: 1985, withdrawn: 1999, confidence: 0.9 },
+        { id: 'b', series: 'IL 3rd', issued: 1987, withdrawn: 2000, confidence: 0.9 },
+        { id: 'c', series: 'IL 3rd', issued: 1986, withdrawn: 1998, confidence: 0.9 },
+    ]);
+    check('one series becomes one category', g1.categories.length === 1);
+    check('spanning the earliest issue and the latest withdrawal',
+        g1.categories[0].name === '1985 - 2000', g1.categories[0].name);
+    check('with every note of the series in it',
+        g1.categories[0].imageIds.sort().join() === 'a,b,c');
+
+    // If any denomination is still legal tender, the SERIES has not been
+    // withdrawn - so the range stays open rather than ending at the last one
+    // that happened to go.
+    const g2 = aa.groupIntoCategories([
+        { id: 'a', series: 'S', issued: 1990, withdrawn: 2005, confidence: 0.9 },
+        { id: 'b', series: 'S', issued: 1992, withdrawn: 0, confidence: 0.9 },
+    ]);
+    check('a series with one denomination still current stays open',
+        g2.categories[0].name === '1990 -', g2.categories[0].name);
+
+    // Two series that work out to the same range would give two categories with
+    // the same name, which is indistinguishable - so they become one.
+    const g3 = aa.groupIntoCategories([
+        { id: 'a', series: 'X', issued: 1970, withdrawn: 1980, confidence: 0.9 },
+        { id: 'b', series: 'Y', issued: 1970, withdrawn: 1980, confidence: 0.9 },
+    ]);
+    check('two series with the same range become one category',
+        g3.categories.length === 1 && g3.categories[0].imageIds.length === 2);
+
+    // Nothing is guessed at. A low confidence, a missing series or a missing
+    // start date all mean the item is left exactly where it is.
+    const g4 = aa.groupIntoCategories([
+        { id: 'sure',    series: 'A', issued: 1960, withdrawn: 1970, confidence: 0.9 },
+        { id: 'unsure',  series: 'A', issued: 1960, withdrawn: 1970, confidence: 0.2 },
+        { id: 'noseries',series: '',  issued: 1960, withdrawn: 1970, confidence: 0.9 },
+        { id: 'nodate',  series: 'B', issued: 0,    withdrawn: 1970, confidence: 0.9 },
+    ]);
+    check('a guess it is not confident about is left alone',
+        g4.unsure.includes('unsure') && !g4.categories.some(c => c.imageIds.includes('unsure')));
+    check('so is an item with no series or no start date',
+        g4.unsure.includes('noseries') && g4.unsure.includes('nodate'));
+    check('while the confident one is still placed',
+        g4.categories.length === 1 && g4.categories[0].imageIds.join() === 'sure');
+
+    check('categories come out oldest first', (() => {
+        const g = aa.groupIntoCategories([
+            { id: 'n', series: 'N', issued: 2010, withdrawn: 2020, confidence: 0.9 },
+            { id: 'o', series: 'O', issued: 1950, withdrawn: 1960, confidence: 0.9 },
+        ]);
+        return g.categories.map(c => c.name).join(' | ') === '1950 - 1960 | 2010 - 2020';
+    })());
+
+    // The key is the user's own and must never be committed or synced.
+    const fs = await import('node:fs');
+    const src = fs.readFileSync('./js/autoarrange.js', 'utf8');
+    const modaljs2 = fs.readFileSync('./js/modal.js', 'utf8');
+    check('no API key is written into the app',
+        !/AIza[0-9A-Za-z_\-]{10,}/.test(src) && !/AIza[0-9A-Za-z_\-]{10,}/.test(modaljs2),
+        'an unrestricted Google key can reach Gemini, so a published one can be billed');
+    check('the key is kept on the device, not in Drive',
+        /getMeta\(GEMINI_KEY_META\)/.test(src) && !/saveJsonToAppData/.test(src));
+    check('a proposal is never applied on its own',
+        /let proposal = null;/.test(modaljs2) && /function applyProposal/.test(modaljs2) &&
+        /if \(proposal\) \{\n            const placed = applyProposal\(\);/.test(modaljs2),
+        'it must be applied only by the tick');
+    check('and throwing it away changes nothing',
+        /Throwing away a proposal changes nothing/.test(modaljs2));
+}
+
+console.log('\nAuto arrange: a whole run');
+{
+    const aa = await import('./js/autoarrange.js');
+    const answers = {
+        n1: { country:'Israel', denomination:'20', series:'IL 3rd', issued:1985, withdrawn:1999, confidence:0.9 },
+        n2: { country:'Israel', denomination:'50', series:'IL 3rd', issued:1987, withdrawn:2000, confidence:0.9 },
+        n3: { country:'Israel', denomination:'20', series:'IL 4th', issued:1999, withdrawn:0,    confidence:0.85 },
+        n4: { country:'?',      denomination:'?',  series:'',       issued:0,    withdrawn:0,    confidence:0.1 },
+    };
+    // The thumbnails have to already be on the device, as they are for any
+    // photo that has been looked at - otherwise this reaches for Drive.
+    ['n1','n2','n3','n4'].forEach(id => idbStores.images.set(id + '_thumb', new Blob(['x'])));
+
+    let calls = 0, sawImage = false, sawKey = '';
+    const prevFetch = global.fetch;
+    global.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.includes('generativelanguage')) {
+            calls++;
+            sawKey = (u.match(/[?&]key=([^&]+)/) || [])[1] || '';
+            const body = JSON.parse(init.body);
+            if (body.contents[0].parts.some(p => p.inline_data)) sawImage = true;
+            const id = ['n1','n2','n3','n4'][calls - 1];
+            // Fenced, the way a model usually answers however it is asked.
+            return { ok:true, json: async () => ({ candidates: [{ content: { parts: [
+                { text: '```json\n' + JSON.stringify(answers[id]) + '\n```' } ] } }] }) };
+        }
+        if (u.startsWith('blob:')) return { ok:true, blob: async () => new Blob(['x']) };
+        return prevFetch(url, init);
+    };
+
+    const images = ['n1','n2','n3','n4'].map(id => ({ id, name: id + '.jpg' }));
+    const out = await aa.proposeArrangement(images, 'test-key');
+    global.fetch = prevFetch;
+
+    check('every item is sent, once each', calls === 4, String(calls));
+    check('the photo itself is sent, not just its name', sawImage);
+    check('the key goes to Google and nowhere else', sawKey === 'test-key');
+    check('a fenced JSON answer is still read',
+        out.results.length === 4, JSON.stringify(out.results.length));
+    check('the two series become two categories, oldest first',
+        out.categories.map(c => c.name).join(' | ') === '1985 - 2000 | 1999 -',
+        JSON.stringify(out.categories.map(c => c.name)));
+    check('the unidentifiable note is left where it is',
+        out.unsure.join() === 'n4', JSON.stringify(out.unsure));
+
+    // A rejected key fails every photo, so it stops the run instead of being
+    // reported forty times over.
+    const prev2 = global.fetch;
+    global.fetch = async (url, init) => {
+        if (String(url).includes('generativelanguage')) {
+            return { ok:false, status:403, text: async () => 'key rejected' };
+        }
+        if (String(url).startsWith('blob:')) return { ok:true, blob: async () => new Blob(['x']) };
+        return prev2(url, init);
+    };
+    let stopped = null;
+    try { await aa.proposeArrangement(images, 'bad-key'); }
+    catch (e) { stopped = e.status; }
+    global.fetch = prev2;
+    check('a rejected key stops the run rather than failing every photo',
+        stopped === 403, String(stopped));
+
+    // Cancel has to tear down the transfer, not just be noticed between photos.
+    const controller = new AbortController();
+    controller.abort();
+    let cancelled = false;
+    try { await aa.proposeArrangement(images, 'k', null, controller.signal); }
+    catch (e) { cancelled = aa.isAutoArrangeCancelled(e); }
+    check('an already-cancelled run stops immediately', cancelled);
 }
 
 console.log('\nCurrency merge (regression)');
@@ -1579,7 +1744,10 @@ console.log('\nClear cache clears the DEVICE cache too (item 5)');
     const cache = await import('./js/cache.js');
 
     // Two thumbnails and one full-size photo sitting on the device - the state
-    // the app is in after browsing a few countries.
+    // the app is in after browsing a few countries. Started from empty: earlier
+    // blocks legitimately leave their own thumbnails behind, and this one
+    // asserts exact counts.
+    idbStores.images.clear();
     idbStores.images.set('p1_thumb', new Blob(['t'.repeat(1000)]));
     idbStores.images.set('p2_thumb', new Blob(['t'.repeat(2000)]));
     idbStores.images.set('p1_full', new Blob(['f'.repeat(9000)]));
@@ -1610,6 +1778,25 @@ check('a Hebrew device locale does not leak into the date', (() => {
         { year: 'numeric', month: 'long', day: 'numeric' });
     return /August/.test(d);
 })());
+
+console.log('\nService worker shell');
+{
+    // A new module that is not in SHELL_ASSETS breaks the app offline and
+    // nowhere else, so nothing notices until someone is on a train. This is
+    // exactly what almost shipped with js/autoarrange.js.
+    const fs = await import('node:fs');
+    const sw = fs.readFileSync('./sw.js', 'utf8');
+    const listed = new Set((sw.match(/'\.\/js\/[a-z0-9_.-]+\.js'/gi) || [])
+        .map(s => s.replace(/'/g, '').replace('./js/', '')));
+    const onDisk = fs.readdirSync('./js').filter(f => f.endsWith('.js'));
+    const missing = onDisk.filter(f => !listed.has(f));
+    check('every js module is in the offline shell', missing.length === 0, missing.join());
+
+    const shellVersion = (sw.match(/const VERSION = 'v([0-9.]+)'/) || [])[1];
+    const cfgv = await import('./js/config.js');
+    check('the service worker version matches APP_VERSION',
+        shellVersion === cfgv.APP_VERSION, `sw ${shellVersion} vs app ${cfgv.APP_VERSION}`);
+}
 
 console.log('\nutil');
 check('escapeHtml', util.escapeHtml('<b>&</b>') === '&lt;b&gt;&amp;&lt;/b&gt;');
