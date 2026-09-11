@@ -1189,6 +1189,57 @@ console.log('\nAuto arrange: a whole run');
     try { await aa.proposeArrangement(images, 'k', null, controller.signal); }
     catch (e) { cancelled = aa.isAutoArrangeCancelled(e); }
     check('an already-cancelled run stops immediately', cancelled);
+
+    // The v2.26 bug: gemini-2.0-flash was shut down on 1 June 2026, every
+    // request answered 404, and the whole country came back as "photos could
+    // not be read at all" with no reason given.
+    const prev3 = global.fetch;
+    const tried = [];
+    global.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.includes('generativelanguage')) {
+            const model = (u.match(/models\/([^:]+):/) || [])[1];
+            if (!tried.includes(model)) tried.push(model);
+            // The first name in the list is retired, as one day it will be.
+            if (model === aa.AUTO_ARRANGE.models[0]) {
+                return { ok:false, status:404, text: async () => 'model not found' };
+            }
+            return { ok:true, json: async () => ({ candidates: [{ content: { parts: [
+                { text: JSON.stringify(answers.n1) } ] } }] }) };
+        }
+        if (u.startsWith('blob:')) return { ok:true, blob: async () => new Blob(['x']) };
+        return prev3(url, init);
+    };
+    aa.resetModelChoice();
+    const fellBack = await aa.proposeArrangement(images, 'k');
+    check('a retired model name falls through to the next one',
+        fellBack.results.length === 4 && fellBack.failures.length === 0,
+        JSON.stringify({ r: fellBack.results.length, f: fellBack.failures }));
+    check('and the dead name is not tried again for every photo',
+        tried.length === 2 && tried[1] === aa.AUTO_ARRANGE.models[1], JSON.stringify(tried));
+    check('the working model is remembered for the rest of the run',
+        aa.activeModel() === aa.AUTO_ARRANGE.models[1], aa.activeModel());
+
+    // If NO name works it is not the photos, so say so once and stop.
+    global.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.includes('generativelanguage')) return { ok:false, status:404, text: async () => 'gone' };
+        if (u.startsWith('blob:')) return { ok:true, blob: async () => new Blob(['x']) };
+        return prev3(url, init);
+    };
+    aa.resetModelChoice();
+    let allGone = null;
+    try { await aa.proposeArrangement(images, 'k'); } catch (e) { allGone = e.status; }
+    check('every name being retired stops the run instead of blaming the photos',
+        allGone === 404, String(allGone));
+    global.fetch = prev3;
+    aa.resetModelChoice();
+
+    // And the reason reaches the screen, which it did not in v2.26.
+    const fs2 = await import('node:fs');
+    const modaljs3 = fs2.readFileSync('./js/modal.js', 'utf8');
+    check('a failure that hit every photo is explained, not just counted',
+        /function commonFailure/.test(modaljs3) && /could not be read at all` \+\n\s*\(why \? `: \$\{why\}` : '\.'\)/.test(modaljs3));
 }
 
 console.log('\nCurrency merge (regression)');

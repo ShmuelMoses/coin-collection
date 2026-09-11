@@ -460,10 +460,26 @@ function renderProposal(code) {
     if (proposal.failures && proposal.failures.length) {
         const f = document.createElement('div');
         f.className = 'proposal-unsure';
+        // The reason, not just the count. A bare "4 photos could not be read"
+        // is the same sentence whether one photo is blurred or the whole
+        // feature is broken, and there is no way to tell them apart without
+        // opening the console - which is how a retired model name spent a
+        // release looking like four unreadable photos.
+        const why = commonFailure(proposal.failures);
         f.textContent = `${proposal.failures.length} photo` +
-            `${proposal.failures.length === 1 ? '' : 's'} could not be read at all.`;
+            `${proposal.failures.length === 1 ? '' : 's'} could not be read at all` +
+            (why ? `: ${why}` : '.');
         modalImages.appendChild(f);
     }
+}
+
+// If every failure says the same thing, it is not the photos - it is the
+// connection, the key or the service, and that one sentence is worth showing.
+function commonFailure(failures) {
+    const messages = failures.map(f => (f && f.message) || '');
+    const first = messages[0];
+    if (!first || !messages.every(m => m === first)) return '';
+    return first.length > 160 ? first.slice(0, 157) + '…' : first;
 }
 
 // Asks once and remembers, on this device only. The key is the user's own: an

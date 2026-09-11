@@ -19,14 +19,24 @@ export const getStoredApiKey = () => getMeta(GEMINI_KEY_META).then(v => (v && v.
 export const storeApiKey = key => setMeta(GEMINI_KEY_META, { key: String(key || '').trim() });
 
 // Flash: this is image-in / one-short-answer-out, run once per photo, and the
-// cheapest model that reads a banknote reliably. Concurrency is low for the
-// same reason as everywhere else in this app - a phone is the hard case.
+// cheapest kind of model that reads a banknote reliably. Concurrency is low for
+// the same reason as everywhere else in this app - a phone is the hard case.
+//
+// MODELS is a list, not a name, because Google retires model names on a
+// schedule - gemini-2.0-flash was shut down on 1 June 2026 and took the first
+// version of this feature with it. A retired name answers 404, which is
+// indistinguishable from a broken photo unless it is handled: the list is tried
+// in order and the first one that exists is used for the rest of the run.
 export const AUTO_ARRANGE = {
-    model: 'gemini-2.0-flash',
+    models: ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-3.5-flash-lite'],
     concurrency: 2,
     minConfidence: 0.5,
     timeoutMs: 30000,
 };
+
+let modelIndex = 0;
+export const activeModel = () => AUTO_ARRANGE.models[modelIndex];
+export const resetModelChoice = () => { modelIndex = 0; };
 
 const ENDPOINT = m => `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`;
 
@@ -66,6 +76,25 @@ function extractJson(text) {
     catch (err) { return null; }
 }
 
+// Sends to the current model, and on a 404 - the name has been retired - moves
+// to the next one in the list and tries again. The index is only advanced by
+// whoever saw the failure first, so two workers hitting the same dead name
+// together cost one step down the list rather than two.
+async function callModel(body, apiKey, signal) {
+    for (;;) {
+        const attempt = modelIndex;
+        const resp = await fetch(`${ENDPOINT(AUTO_ARRANGE.models[attempt])}?key=${encodeURIComponent(apiKey)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal,
+        });
+        if (resp.status !== 404) return resp;
+        if (attempt >= AUTO_ARRANGE.models.length - 1) return resp;
+        if (modelIndex === attempt) modelIndex = attempt + 1;
+    }
+}
+
 // One image. Returns null rather than throwing for anything that is merely a
 // bad answer - a single unreadable photo must not abandon the whole country.
 export async function identifyOne(base64Jpeg, apiKey, signal) {
@@ -78,12 +107,7 @@ export async function identifyOne(base64Jpeg, apiKey, signal) {
         }],
         generationConfig: { temperature: 0, maxOutputTokens: 300 },
     };
-    const resp = await fetch(`${ENDPOINT(AUTO_ARRANGE.model)}?key=${encodeURIComponent(apiKey)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal,
-    });
+    const resp = await callModel(body, apiKey, signal);
     if (!resp.ok) {
         const text = await resp.text().catch(() => '');
         const err = new Error(`Gemini returned ${resp.status}: ${text.slice(0, 300)}`);
@@ -180,9 +204,11 @@ export async function proposeArrangement(images, apiKey, onProgress, signal) {
                 else failures.push({ id: img.id, message: 'no answer could be read' });
             } catch (err) {
                 if (isAutoArrangeCancelled(err) || (signal && signal.aborted)) throw abortError();
-                // An invalid key or an exhausted quota fails EVERY photo, so it
+                // An invalid key, an exhausted quota, or a model name that no
+                // longer exists anywhere in the list fails EVERY photo, so it
                 // is worth stopping on rather than reporting 40 times.
-                if (err.status === 400 || err.status === 401 || err.status === 403 || err.status === 429) throw err;
+                if (err.status === 400 || err.status === 401 || err.status === 403 ||
+                    err.status === 404 || err.status === 429) throw err;
                 console.warn('Could not identify', img.id, err);
                 failures.push({ id: img.id, message: (err && err.message) || String(err) });
             }
