@@ -9,12 +9,7 @@ import {
     uncategorizedLabel, DEFAULT_SECTION_NAME
 } from './layouts.js';
 import { buildCountryExport, shareOrDownloadFile, isExportCancelled } from './export.js';
-import { alertDialog, confirmDialog, promptDialog, showProgressDialog } from './dialog.js';
-import {
-    proposeArrangement, isAutoArrangeCancelled,
-    getStoredApiKey, storeApiKey
-} from './autoarrange.js';
-
+import { alertDialog, showProgressDialog } from './dialog.js';
 const modal = document.getElementById('modal');
 const modalBackdrop = document.getElementById('modal-backdrop');
 const modalTitle = document.getElementById('modal-title');
@@ -27,10 +22,6 @@ let organizeMode = false;
 let draftCategories = [];
 let draftUncategorizedOrder = [];
 let draftUncategorizedName = '';
-// The auto-arrange proposal currently on screen, or null. Holding it here
-// rather than applying it straight away is the whole point: it is a suggestion
-// until the tick is pressed.
-let proposal = null;
 // Which section's name is being typed into. A category is its index; the
 // default section is -1, the same number that already means "uncategorized"
 // everywhere else in this file (see moveImageDirection).
@@ -56,25 +47,15 @@ export function setModalCollectionName(name) { collectionName = name || ''; }
 function currentCollectionName() { return collectionName; }
 
 function updateHeaderIcons() {
-    const idle = !shareSelectMode && !organizeMode && !proposal;
-    const auto = document.getElementById('auto-arrange-btn');
-    if (auto) {
-        auto.style.display = idle ? 'flex' : 'none';
-        // It writes categories to Drive and needs the network, so it is off
-        // for the same reasons organising is.
-        auto.classList.toggle('offline-disabled', state.offline || !state.online);
-    }
+    const idle = !shareSelectMode && !organizeMode;
     // Organising writes categories back to Drive, so it is unavailable offline.
     document.getElementById('organize-icon-btn').classList.toggle('offline-disabled', state.offline);
     document.getElementById('share-icon-btn').style.display = idle ? 'flex' : 'none';
     document.getElementById('share-confirm-icon-btn').style.display = shareSelectMode ? 'flex' : 'none';
     document.getElementById('share-cancel-icon-btn').style.display = shareSelectMode ? 'flex' : 'none';
     document.getElementById('organize-icon-btn').style.display = idle ? 'flex' : 'none';
-    // The proposal borrows organise mode's tick and cross rather than adding a
-    // second pair that mean the same thing.
-    const editing = organizeMode || !!proposal;
-    document.getElementById('organize-confirm-icon-btn').style.display = editing ? 'flex' : 'none';
-    document.getElementById('organize-cancel-icon-btn').style.display = editing ? 'flex' : 'none';
+    document.getElementById('organize-confirm-icon-btn').style.display = organizeMode ? 'flex' : 'none';
+    document.getElementById('organize-cancel-icon-btn').style.display = organizeMode ? 'flex' : 'none';
 }
 
 function setShareSelectMode(on) {
@@ -410,169 +391,7 @@ function entryFor(code, whole) {
     return whole ? entry : filterEntry(entry, state.itemType);
 }
 
-// ---------- auto arrange ----------
-// Runs the country's photos through Gemini and shows what it worked out. The
-// proposal is rendered into the modal like organise mode, so the photos are
-// visible under each proposed name: the whole judgement is "do these belong
-// together, and is that date range right", which cannot be made from a list of
-// names alone.
-function renderProposal(code) {
-    modalTitle.textContent = COUNTRY_NAMES[code] || code;
-    modalImages.innerHTML = '';
-
-    const note = document.createElement('p');
-    note.className = 'proposal-note';
-    note.textContent = proposal.categories.length
-        ? 'Suggested categories. Nothing is saved until you press the tick - ' +
-          'edit any name first, or press the cross to throw it away.'
-        : 'Nothing could be identified confidently enough to suggest a category.';
-    modalImages.appendChild(note);
-
-    proposal.categories.forEach((cat, idx) => {
-        const head = document.createElement('div');
-        head.className = 'proposal-head';
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.value = cat.name;
-        input.setAttribute('aria-label', 'Suggested category name');
-        input.oninput = () => { proposal.categories[idx].name = input.value; };
-        head.appendChild(input);
-
-        const count = document.createElement('span');
-        count.className = 'count';
-        count.textContent = `${cat.imageIds.length} item${cat.imageIds.length === 1 ? '' : 's'}`;
-        head.appendChild(count);
-        modalImages.appendChild(head);
-
-        const imgs = cat.imageIds.map(id => proposal.byId.get(id)).filter(Boolean);
-        modalImages.appendChild(renderImageGroup(imgs));
-    });
-
-    if (proposal.unsure.length) {
-        const left = document.createElement('div');
-        left.className = 'proposal-unsure';
-        left.textContent = `${proposal.unsure.length} item` +
-            `${proposal.unsure.length === 1 ? '' : 's'} left where they are - ` +
-            `the series or its dates could not be established.`;
-        modalImages.appendChild(left);
-    }
-    if (proposal.failures && proposal.failures.length) {
-        const f = document.createElement('div');
-        f.className = 'proposal-unsure';
-        // The reason, not just the count. A bare "4 photos could not be read"
-        // is the same sentence whether one photo is blurred or the whole
-        // feature is broken, and there is no way to tell them apart without
-        // opening the console - which is how a retired model name spent a
-        // release looking like four unreadable photos.
-        const why = commonFailure(proposal.failures);
-        f.textContent = `${proposal.failures.length} photo` +
-            `${proposal.failures.length === 1 ? '' : 's'} could not be read at all` +
-            (why ? `: ${why}` : '.');
-        modalImages.appendChild(f);
-    }
-}
-
-// If every failure says the same thing, it is not the photos - it is the
-// connection, the key or the service, and that one sentence is worth showing.
-function commonFailure(failures) {
-    const messages = failures.map(f => (f && f.message) || '');
-    const first = messages[0];
-    if (!first || !messages.every(m => m === first)) return '';
-    return first.length > 160 ? first.slice(0, 157) + '…' : first;
-}
-
-// Asks once and remembers, on this device only. The key is the user's own: an
-// unrestricted Google API key can reach Gemini, so one published in a static
-// site is a key anyone can bill.
-async function ensureApiKey() {
-    let key = await getStoredApiKey().catch(() => '');
-    if (key) return key;
-    const typed = await promptDialog(
-        'Paste a Google AI Studio API key (aistudio.google.com/apikey).\n\n' +
-        'It is stored on this device only - never in the app, never in Drive - ' +
-        'so it is yours and it is not published anywhere.',
-        '', { title: 'Auto arrange' });
-    key = (typed || '').trim();
-    if (!key) return '';
-    await storeApiKey(key).catch(err => console.warn('Could not store the key:', err));
-    return key;
-}
-
-async function runAutoArrange() {
-    const code = currentModalCode;
-    const entry = entryFor(code, false);
-    if (!entry) return;
-    const images = entry.own.concat(...Object.values(entry.historical));
-    if (!images.length) { await alertDialog('There is nothing here to arrange.'); return; }
-
-    const key = await ensureApiKey();
-    if (!key) return;
-
-    const progress = showProgressDialog('Auto arrange',
-        `Looking at ${images.length} item${images.length === 1 ? '' : 's'}…`, { cancellable: true });
-    let result;
-    try {
-        result = await proposeArrangement(images, key,
-            (done, total) => progress.setMessage(`Looking at item ${done} of ${total}…`),
-            progress.signal);
-        progress.close();
-    } catch (err) {
-        progress.close();
-        if (isAutoArrangeCancelled(err)) return;
-        console.error('Auto arrange failed:', err);
-        // A rejected key is the one failure worth offering to fix on the spot.
-        if (err.status === 400 || err.status === 401 || err.status === 403) {
-            const again = await confirmDialog(
-                'Google rejected that API key. Enter a different one?',
-                { title: 'Auto arrange', confirmLabel: 'Change key' });
-            if (again) { await storeApiKey(''); runAutoArrange(); }
-            return;
-        }
-        await alertDialog(describeError(err, 'Those items could not be identified'), 'Auto arrange');
-        return;
-    }
-
-    proposal = {
-        categories: result.categories,
-        unsure: result.unsure,
-        failures: result.failures,
-        byId: new Map(images.map(i => [i.id, i])),
-    };
-    updateHeaderIcons();
-    renderProposal(code);
-}
-
-// Accepting it: the proposed categories are laid OVER whatever is there, and
-// anything not placed keeps its position. Existing categories are kept - this
-// adds to the arrangement rather than replacing it - except where a name
-// collides, which is merged rather than duplicated.
-function applyProposal() {
-    const code = currentModalCode;
-    const layout = getCountryLayout(code);
-    const placed = new Set();
-
-    proposal.categories.forEach(cat => {
-        const name = (cat.name || '').trim();
-        if (!name || !cat.imageIds.length) return;
-        let target = layout.categories.find(c => c.name === name);
-        if (!target) { target = { name, imageIds: [] }; layout.categories.push(target); }
-        cat.imageIds.forEach(id => {
-            if (!target.imageIds.includes(id)) target.imageIds.push(id);
-            placed.add(id);
-        });
-    });
-    // A photo can only be in one category, so take it out of any other.
-    layout.categories.forEach(c => {
-        if (proposal.categories.some(p => (p.name || '').trim() === c.name)) return;
-        c.imageIds = c.imageIds.filter(id => !placed.has(id));
-    });
-    layout.uncategorizedOrder = layout.uncategorizedOrder.filter(id => !placed.has(id));
-    return placed.size;
-}
-
 function renderModalContent(code) {
-    if (proposal) { renderProposal(code); return; }
     const entry = entryFor(code, organizeMode);
     if (!entry) return;
     modalTitle.textContent = COUNTRY_NAMES[code] || code;
@@ -627,7 +446,6 @@ export function openModal(code) {
     if (!entry) return;
     currentModalCode = code;
     organizeMode = false;
-    proposal = null;
 
     const allImages = entry.own.concat(...Object.values(entry.historical));
     selectedForShare = new Set(allImages.map(img => img.id));
@@ -690,39 +508,13 @@ export function initModal() {
     };
 
     document.getElementById('organize-cancel-icon-btn').onclick = () => {
-        // Throwing away a proposal changes nothing: it was never applied.
-        if (proposal) {
-            proposal = null;
-            updateHeaderIcons();
-            renderModalContent(currentModalCode);
-            return;
-        }
         organizeMode = false;
         editingCategoryIndex = null;
         updateHeaderIcons();
         renderModalContent(currentModalCode);
     };
 
-    document.getElementById('auto-arrange-btn').onclick = () => {
-        if (document.getElementById('auto-arrange-btn').classList.contains('offline-disabled')) return;
-        runAutoArrange();
-    };
-
-    document.getElementById('organize-confirm-icon-btn').onclick = async () => {
-        // The same tick accepts a proposal. Applying it writes into the layout,
-        // and commitOrganize is then what actually saves it - so accepting a
-        // suggestion goes through exactly the same save as arranging by hand.
-        if (proposal) {
-            const placed = applyProposal();
-            proposal = null;
-            draftCategories = JSON.parse(JSON.stringify(getCountryLayout(currentModalCode).categories));
-            draftUncategorizedOrder =
-                JSON.parse(JSON.stringify(getCountryLayout(currentModalCode).uncategorizedOrder));
-            draftUncategorizedName = getCountryLayout(currentModalCode).uncategorizedName || '';
-            const ok = await commitOrganize({ exit: true });
-            if (ok && !placed) await alertDialog('Nothing was placed into a category.');
-            return;
-        }
+    document.getElementById('organize-confirm-icon-btn').onclick = () => {
         commitOrganize({ exit: true });
     };
 

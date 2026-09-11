@@ -17,7 +17,7 @@ export const MULTI_CURRENCY_CONFIG_FILENAME = 'multi_country_currencies';
 
 // Single source of truth for the version: written into the login screen at
 // startup, and shown in the info panel behind the sidebar's "!" button.
-export const APP_VERSION = '2.27';
+export const APP_VERSION = '2.28';
 
 // How long boot waits for Google before giving up and offering offline mode.
 // One mutable object so the cadence is in a single visible place, and so the
@@ -54,8 +54,17 @@ export const styleFor = (shown, isOwned) => shown
     ? { fillColor: isOwned ? OWNED_COLOR : NONE_COLOR, fillOpacity: 0.65 }
     : { fillColor: MUTED_COLOR, fillOpacity: 0.18 };
 
-// How long the colour cross-fade takes. Every country now fades AT ONCE rather
-// than one after another, so these are the time to full saturation for the
-// whole map - a little shorter than the old staggered reveal took to finish.
-export const REVEAL_MS = 4000;     // initial load / Reset view
-export const TRANSITION_MS = 2400; // switching the colour-mode or item-type button
+// The countries colour in one after another, in a sweep across the map. These
+// are the LONGEST the whole sweep may take - a big collection uses all of it, a
+// small one finishes sooner (see REVEAL_MAX_STEP_MS).
+export const REVEAL_MS = 3200;     // initial load / Reset view
+export const TRANSITION_MS = 1900; // switching the colour-mode or item-type button
+
+// One country's own fade, from muted to its colour. Short, so each country
+// arrives as an event rather than drifting in.
+export const COUNTRY_FADE_MS = 550;
+
+// The longest gap between one country starting and the next. Without a cap, a
+// collection with four countries would spread those four across the whole
+// window and crawl; with it, the sweep is only as long as it needs to be.
+export const REVEAL_MAX_STEP_MS = 80;

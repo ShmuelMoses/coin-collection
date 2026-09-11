@@ -1,6 +1,9 @@
 // The Leaflet map: countries, the antique frame, colouring and labels.
 
-import { MUTED_COLOR, BORDER_COLOR, styleFor, REVEAL_MS } from './config.js';
+import {
+    MUTED_COLOR, BORDER_COLOR, styleFor,
+    REVEAL_MS, COUNTRY_FADE_MS, REVEAL_MAX_STEP_MS
+} from './config.js';
 import { state, passesFilters, matchesQuery, isOwned } from './state.js';
 import {
     getProjectedFeatures, getCodeForFeature,
@@ -49,7 +52,7 @@ function parseColor(value) {
     return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 const mix = (a, b, t) => Math.round(a + (b - a) * t);
-// Smoothstep: no hard start or stop, so the whole map eases in together
+// Smoothstep: no hard start or stop, so each country eases into its colour
 // instead of snapping on at t=0.
 const ease = t => t * t * (3 - 2 * t);
 
@@ -63,9 +66,15 @@ function cancelFade() {
     activeFade = null;
 }
 
-// Every country changes colour AT THE SAME TIME, over durationMs. It used to
-// be a staggered reveal - one country every durationMs/N - which on a large
-// collection meant watching the map fill in one country at a time.
+// The countries come in one after another: each has its own short fade, and
+// their start times are spread across the sweep in the order the layers were
+// built, so the colour travels across the map instead of appearing everywhere
+// at once.
+//
+// durationMs is a ceiling, not a fixed length. The gap between one country and
+// the next is the window divided between them, capped at REVEAL_MAX_STEP_MS -
+// otherwise a four-country collection would stretch those four over three
+// seconds and look broken rather than deliberate.
 function animateFill(changes, durationMs, onDone) {
     const specs = changes.map(ch => ({
         layers: ch.layers,
@@ -74,7 +83,16 @@ function animateFill(changes, durationMs, onDone) {
         fromOpacity: ch.from.fillOpacity,
         toOpacity: ch.to.fillOpacity,
         to: ch.to,
+        done: false,
     }));
+
+    const fadeMs = Math.min(COUNTRY_FADE_MS, durationMs);
+    const spread = Math.max(0, durationMs - fadeMs);
+    const step = specs.length > 1
+        ? Math.min(REVEAL_MAX_STEP_MS, spread / (specs.length - 1))
+        : 0;
+    specs.forEach((s, i) => { s.startAt = i * step; });
+    const totalMs = step * Math.max(0, specs.length - 1) + fadeMs;
 
     const started = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     // Every frame repaints the whole canvas, so on a phone with 250 polygons
@@ -91,12 +109,23 @@ function animateFill(changes, durationMs, onDone) {
 
     const frame = () => {
         const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
-        const t = durationMs > 0 ? Math.min(1, (now - started) / durationMs) : 1;
-        if (t >= 1) { finish(); return; }
+        const elapsed = now - started;
+        if (elapsed >= totalMs) { finish(); return; }
         if (now - lastPainted >= MIN_FRAME_MS) {
             lastPainted = now;
-            const e = ease(t);
             specs.forEach(s => {
+                // Finished countries are left alone rather than restyled every
+                // frame, and ones whose turn has not come are left at the
+                // colour they already have on screen.
+                if (s.done) return;
+                const t = fadeMs > 0 ? (elapsed - s.startAt) / fadeMs : 1;
+                if (t <= 0) return;
+                if (t >= 1) {
+                    s.layers.forEach(layer => layer.setStyle(s.to));
+                    s.done = true;
+                    return;
+                }
+                const e = ease(t);
                 const style = {
                     fillColor: `rgb(${mix(s.fromRgb[0], s.toRgb[0], e)},` +
                                `${mix(s.fromRgb[1], s.toRgb[1], e)},` +
@@ -111,7 +140,7 @@ function animateFill(changes, durationMs, onDone) {
     activeFade = requestAnimationFrame(frame);
 }
 
-// `animate` cross-fades every country that changes, all together, over
+// `animate` colours in every country that changes, one after another, within
 // durationMs. Only countries that actually CHANGE are animated - shownCodes and
 // ownedCodes remember what is on screen - so each call only touches what is
 // different. Typing in the search box colours instantly; animating that too

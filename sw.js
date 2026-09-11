@@ -11,7 +11,7 @@
 // served stale. They simply fail offline, which app.js handles by staying on
 // the sign-in screen.
 
-const VERSION = 'v2.27';
+const VERSION = 'v2.28';
 const SHELL_CACHE = 'collections-shell-' + VERSION;
 
 // Everything the app needs to boot with no network.
@@ -27,7 +27,6 @@ const SHELL_ASSETS = [
     './icons/apple-touch-icon.png',
     './js/app.js',
     './js/auth.js',
-    './js/autoarrange.js',
     './js/cache.js',
     './js/config.js',
     './js/countries.js',
