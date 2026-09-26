@@ -20,9 +20,6 @@ let currentModalCode = null;
 let selectedForShare = new Set();
 let shareSelectMode = false;
 let organizeMode = false;
-// Choosing which photo this country wears on the map. Its own mode, because
-// the choice was hidden on the enlarged photo before and nobody found it.
-let mapPhotoMode = false;
 let draftCategories = [];
 let draftUncategorizedOrder = [];
 let draftUncategorizedName = '';
@@ -57,14 +54,7 @@ export function setModalCollectionName(name) { collectionName = name || ''; }
 function currentCollectionName() { return collectionName; }
 
 function updateHeaderIcons() {
-    const idle = !shareSelectMode && !organizeMode && !mapPhotoMode;
-    const mapBtn = document.getElementById('map-photo-icon-btn');
-    mapBtn.style.display = idle ? 'flex' : 'none';
-    // It writes the choice to Drive, so it is unavailable offline for the same
-    // reason organising is.
-    mapBtn.classList.toggle('offline-disabled', state.offline);
-    document.getElementById('map-photo-cancel-icon-btn').style.display =
-        mapPhotoMode ? 'flex' : 'none';
+    const idle = !shareSelectMode && !organizeMode;
     // Organising writes categories back to Drive, so it is unavailable offline.
     document.getElementById('organize-icon-btn').classList.toggle('offline-disabled', state.offline);
     document.getElementById('share-icon-btn').style.display = idle ? 'flex' : 'none';
@@ -73,12 +63,6 @@ function updateHeaderIcons() {
     document.getElementById('organize-icon-btn').style.display = idle ? 'flex' : 'none';
     document.getElementById('organize-confirm-icon-btn').style.display = organizeMode ? 'flex' : 'none';
     document.getElementById('organize-cancel-icon-btn').style.display = organizeMode ? 'flex' : 'none';
-}
-
-function setMapPhotoMode(on) {
-    mapPhotoMode = on;
-    updateHeaderIcons();
-    renderModalContent(currentModalCode);
 }
 
 function setShareSelectMode(on) {
@@ -126,9 +110,7 @@ function renderImageGroup(images) {
             const isSelected = selectedForShare.has(img.id);
             el.style.opacity = (shareSelectMode && !isSelected) ? '0.3' : '1';
         };
-        if (mapPhotoMode) wrapper.classList.add('pickable');
         el.onclick = () => {
-            if (mapPhotoMode) { chooseMapPhoto(img.id); return; }
             if (shareSelectMode) {
                 if (selectedForShare.has(img.id)) selectedForShare.delete(img.id);
                 else selectedForShare.add(img.id);
@@ -431,15 +413,6 @@ function renderModalContent(code) {
     modalTitle.textContent = COUNTRY_NAMES[code] || code;
     modalImages.innerHTML = '';
 
-    if (mapPhotoMode) {
-        const note = document.createElement('p');
-        note.className = 'mode-note';
-        note.textContent = getCountryBackgroundId(code)
-            ? 'Tap a photo to show it on the map, or tap the marked one to take it off.'
-            : 'Tap the photo you want this country to wear on the map.';
-        modalImages.appendChild(note);
-    }
-
     const categories = organizeMode ? draftCategories : getCountryLayout(code).categories;
     const categorizedIds = new Set(categories.flatMap(c => c.imageIds));
     const uncategorizedRaw = entry.own.filter(img => !categorizedIds.has(img.id));
@@ -489,7 +462,6 @@ export function openModal(code) {
     if (!entry) return;
     currentModalCode = code;
     organizeMode = false;
-    mapPhotoMode = false;
 
     const allImages = entry.own.concat(...Object.values(entry.historical));
     selectedForShare = new Set(allImages.map(img => img.id));
@@ -545,22 +517,6 @@ function refreshBackgroundButton(fileId) {
     btn.classList.toggle('offline-disabled', !!state.offline);
 }
 
-// Tapping a photo in this mode chooses it; tapping the one already chosen
-// takes it off the map again, so the mode both sets and clears.
-async function chooseMapPhoto(imageId) {
-    const code = currentModalCode;
-    if (state.offline) { await alertDialog('This can only be changed with a connection.'); return; }
-    const next = getCountryBackgroundId(code) === imageId ? '' : imageId;
-    try {
-        await setCountryBackground(code, next);
-        refreshNoteFills();
-    } catch (err) {
-        await alertDialog(describeError(err, 'That choice could not be saved'));
-        return;
-    }
-    setMapPhotoMode(false);
-}
-
 async function toggleBackground() {
     const btn = document.getElementById('set-background-btn');
     if (!btn || btn.classList.contains('offline-disabled') || !enlargedId) return;
@@ -594,12 +550,6 @@ export function initModal() {
     // the click that closes the overlay.
     const bgBtn = document.getElementById('set-background-btn');
     bgBtn.onclick = e => { e.stopPropagation(); toggleBackground(); };
-
-    document.getElementById('map-photo-icon-btn').onclick = () => {
-        if (document.getElementById('map-photo-icon-btn').classList.contains('offline-disabled')) return;
-        setMapPhotoMode(true);
-    };
-    document.getElementById('map-photo-cancel-icon-btn').onclick = () => setMapPhotoMode(false);
 
     document.getElementById('share-icon-btn').onclick = () => setShareSelectMode(true);
     document.getElementById('share-cancel-icon-btn').onclick = () => setShareSelectMode(false);

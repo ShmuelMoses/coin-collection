@@ -74,7 +74,6 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cv-main', 'map', 'list-view',
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
-    'map-photo-icon-btn', 'map-photo-cancel-icon-btn',
     'share-icon-btn', 'share-confirm-icon-btn', 'share-cancel-icon-btn',
     'enlarge-overlay', 'enlarge-img', 'enlarge-actions', 'set-background-btn',
     'photo-map-btn',
@@ -1728,24 +1727,74 @@ console.log('\nA photo of your own as a country\'s fill');
         /fillPane\.style\.pointerEvents = 'none'/.test(mapjs4));
     check('the fills sit above the map and below the country names',
         /fillPane\.style\.zIndex = 450/.test(mapjs4));
+    check('a country with a photo wears the same outline as every other country',
+        /const COUNTRY_BORDER = \{ color: BORDER_COLOR, weight: 0\.6 \};/.test(mapjs4) &&
+        (mapjs4.match(/COUNTRY_BORDER\.weight/g) || []).length === 2 &&
+        !/weight: 2\.6/.test(mapjs4),
+        'the fills had an outline four times heavier than the map underneath');
+
     check('only the chosen countries become SVG, so the canvas map stays fast',
         /preferCanvas: true/.test(mapjs4) && /L\.svg\(\{ pane: 'noteFills'/.test(mapjs4));
 
-    // --- choosing the photo is somewhere it can be FOUND ---
-    // It lived only on the enlarged photo in 2.29 and went unfound. It is now
-    // a mode in the country window's header, next to organising and sharing.
-    const modaljs5 = fs4.readFileSync('./js/modal.js', 'utf8');
-    check('the choice has a button of its own in the country window',
-        /id="map-photo-icon-btn"/.test(html4) &&
-        /getElementById\('map-photo-icon-btn'\)\.onclick/.test(modaljs5));
-    check('it is a mode, so the photos themselves are what you tap',
-        /let mapPhotoMode = false;/.test(modaljs5) &&
-        /if \(mapPhotoMode\) \{ chooseMapPhoto\(img\.id\); return; \}/.test(modaljs5));
-    check('and the mode says what it wants, above the photos',
-        /Tap the photo you want this country to wear on the map/.test(modaljs5));
-    check('leaving the country leaves the mode',
-        /mapPhotoMode = false;\n\n    const allImages/.test(modaljs5) ||
-        /organizeMode = false;\n    mapPhotoMode = false;/.test(modaljs5));
+    // --- only ONE side of the note goes on the map ---
+    // Every photo holds both faces, separated by a band of pure black, and
+    // sometimes framed by black as well. Two faces shrunk into one country
+    // show nothing at all, so the front is cut out.
+    const makePhoto = (w, h, paint) => {
+        const data = new Uint8ClampedArray(w * h * 4);
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const [r, g, b] = paint(x, y);
+            const i = (y * w + x) * 4;
+            data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+        }
+        return { data, width: w, height: h };
+    };
+    const BLACK = [0, 0, 0], FRONT = [200, 180, 140], BACK = [120, 150, 190];
+
+    // One face above the other, 8px of black between them.
+    const stacked = map.frontSideRect(makePhoto(100, 108, (x, y) =>
+        y < 50 ? FRONT : (y < 58 ? BLACK : BACK)));
+    check('faces one above the other: the top one is taken',
+        stacked.x === 0 && stacked.y === 0 && stacked.w === 100 && stacked.h === 50,
+        JSON.stringify(stacked));
+
+    // Side by side, which the obvious "take the top half" rule would cut
+    // straight through the middle of both faces.
+    const beside = map.frontSideRect(makePhoto(108, 50, (x, y) =>
+        x < 50 ? FRONT : (x < 58 ? BLACK : BACK)));
+    check('faces side by side: the left one is taken, not the top half',
+        beside.x === 0 && beside.y === 0 && beside.w === 50 && beside.h === 50,
+        JSON.stringify(beside));
+
+    // The same, photographed on a black cloth: the surround must not be read
+    // as the separator, and must not end up inside the cut.
+    const framed = map.frontSideRect(makePhoto(120, 128, (x, y) => {
+        if (x < 10 || x >= 110 || y < 10 || y >= 118) return BLACK;
+        if (y < 60) return FRONT;
+        if (y < 68) return BLACK;
+        return BACK;
+    }));
+    check('a black surround is trimmed away rather than mistaken for the gap',
+        framed.x === 10 && framed.y === 10 && framed.w === 100 && framed.h === 50,
+        JSON.stringify(framed));
+
+    // A photo of one face only must come back whole.
+    const single = map.frontSideRect(makePhoto(80, 40, () => FRONT));
+    check('a photo of a single face is left alone',
+        single.x === 0 && single.y === 0 && single.w === 80 && single.h === 40,
+        JSON.stringify(single));
+
+    // A dark note is not a separator: only a line that is black ACROSS counts.
+    const dark = map.frontSideRect(makePhoto(80, 40, (x, y) =>
+        (y >= 18 && y < 22 && x < 30) ? BLACK : [70, 60, 50]));
+    check('a dark band that does not cross the whole photo is not a gap',
+        dark.w === 80 && dark.h === 40, JSON.stringify(dark));
+
+    // And a band too close to the edge is a border, not a divider.
+    const edge = map.frontSideRect(makePhoto(80, 44, (x, y) =>
+        (y >= 4 && y < 8) ? BLACK : FRONT));
+    check('a band near the edge leaves no face behind it, so it is not a gap',
+        edge.h >= 36, JSON.stringify(edge));
 
     // --- in the photo map, countries you have nothing from lose their colour ---
     check('a country you own nothing from is left uncoloured in the photo map',

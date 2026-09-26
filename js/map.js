@@ -1,7 +1,7 @@
 // The Leaflet map: countries, the antique frame, colouring and labels.
 
 import {
-    MUTED_COLOR, BORDER_COLOR, FRAME_COLOR, styleFor,
+    MUTED_COLOR, BORDER_COLOR, styleFor,
     REVEAL_MS, COUNTRY_FADE_MS, REVEAL_MAX_STEP_MS
 } from './config.js';
 import { state, passesFilters, matchesQuery, isOwned } from './state.js';
@@ -35,6 +35,11 @@ const COMPASS_ROSE_SVG = `<svg class="compass-rose-overlay" viewBox="-10 -10 220
         </svg>`;
 
 export let leafletMap = null;
+
+// One definition of a country's outline, used both by the map itself and by
+// the photo fills drawn over it. Two copies is how the photo countries ended
+// up wearing an outline four times heavier than their neighbours.
+export const COUNTRY_BORDER = { color: BORDER_COLOR, weight: 0.6 };
 
 // ---------- colouring ----------
 // Colour maths for the cross-fade. The palette lives in CSS custom properties,
@@ -315,15 +320,140 @@ function ensureDefs() {
     return fillDefs;
 }
 
-// The natural size of a thumbnail, so the note can be drawn in its own
-// proportions rather than squashed into the country's.
-function imageAspect(url) {
-    return new Promise(resolve => {
+function loadImage(url) {
+    return new Promise((resolve, reject) => {
         const probe = new Image();
-        probe.onload = () => resolve((probe.naturalWidth || 1) / (probe.naturalHeight || 1));
-        probe.onerror = () => resolve(1);
+        probe.onload = () => resolve(probe);
+        probe.onerror = () => reject(new Error('image could not be decoded'));
         probe.src = url;
     });
+}
+
+// ---------- one side of the note ----------
+// A photo in this collection holds BOTH faces of a note, sometimes one above
+// the other and sometimes side by side, with a band of pure black between them
+// (and often around them). Two faces shrunk into one country show nothing
+// legible, so the front is cut out and that is what the country wears.
+//
+// The band is found rather than assumed: nothing about the photo says which
+// way round it was taken, and a rule like "the top half" would cut the
+// side-by-side photos down the middle of a face.
+const BLACK_MAX = 42;        // a channel value at or under this counts as black
+const BLACK_LINE = 0.93;     // how much of a line must be black for it to count
+const MIN_SIDE = 0.25;       // a face smaller than this of the photo is not a face
+
+function isBlackAt(data, i) {
+    return data[i] <= BLACK_MAX && data[i + 1] <= BLACK_MAX && data[i + 2] <= BLACK_MAX;
+}
+
+// Runs of fully black lines inside [lo, hi], as [start, end] pairs.
+function blackRuns(fraction, lo, hi) {
+    const runs = [];
+    let start = -1;
+    for (let i = lo; i <= hi; i++) {
+        const black = fraction[i] >= BLACK_LINE;
+        if (black && start === -1) start = i;
+        if ((!black || i === hi) && start !== -1) {
+            runs.push([start, black ? i : i - 1]);
+            start = -1;
+        }
+    }
+    return runs;
+}
+
+// The rectangle holding the FIRST face - the top one, or the left one.
+// `img` is ImageData: { data (RGBA), width, height }.
+export function frontSideRect(img) {
+    const { data, width, height } = img;
+    const whole = { x: 0, y: 0, w: width, h: height };
+    if (!width || !height) return whole;
+
+    const rowBlack = new Float64Array(height);
+    const colBlack = new Float64Array(width);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            if (isBlackAt(data, (y * width + x) * 4)) { rowBlack[y]++; colBlack[x]++; }
+        }
+    }
+    for (let y = 0; y < height; y++) rowBlack[y] /= width;
+    for (let x = 0; x < width; x++) colBlack[x] /= height;
+
+    // 1. Drop a black surround, so a photo taken on a black cloth is measured
+    //    by its contents and not by its background.
+    let y0 = 0, y1 = height - 1, x0 = 0, x1 = width - 1;
+    while (y0 < y1 && rowBlack[y0] >= BLACK_LINE) y0++;
+    while (y1 > y0 && rowBlack[y1] >= BLACK_LINE) y1--;
+    while (x0 < x1 && colBlack[x0] >= BLACK_LINE) x0++;
+    while (x1 > x0 && colBlack[x1] >= BLACK_LINE) x1--;
+    const inner = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+    if (inner.w < 2 || inner.h < 2) return whole;
+
+    // 2. Re-measure inside that box: a row is only "black" if it is black
+    //    across the CONTENT, not across margins already discounted.
+    const rowIn = new Float64Array(height);
+    const colIn = new Float64Array(width);
+    for (let y = y0; y <= y1; y++) {
+        let n = 0;
+        for (let x = x0; x <= x1; x++) if (isBlackAt(data, (y * width + x) * 4)) n++;
+        rowIn[y] = n / inner.w;
+    }
+    for (let x = x0; x <= x1; x++) {
+        let n = 0;
+        for (let y = y0; y <= y1; y++) if (isBlackAt(data, (y * width + x) * 4)) n++;
+        colIn[x] = n / inner.h;
+    }
+
+    // 3. The separator is the longest black run that leaves a real face on
+    //    each side of it.
+    const pick = (fraction, lo, hi, size) => {
+        let best = null;
+        blackRuns(fraction, lo, hi).forEach(([a, b]) => {
+            const before = a - lo, after = hi - b;
+            if (before < size * MIN_SIDE || after < size * MIN_SIDE) return;
+            if (!best || (b - a) > (best[1] - best[0])) best = [a, b];
+        });
+        return best;
+    };
+    const hSplit = pick(rowIn, y0, y1, inner.h);   // faces stacked
+    const vSplit = pick(colIn, x0, x1, inner.w);   // faces side by side
+
+    // 4. If both look possible, the longer band is the real one.
+    const hLen = hSplit ? (hSplit[1] - hSplit[0] + 1) / inner.h : 0;
+    const vLen = vSplit ? (vSplit[1] - vSplit[0] + 1) / inner.w : 0;
+    if (hSplit && hLen >= vLen) return { x: inner.x, y: y0, w: inner.w, h: hSplit[0] - y0 };
+    if (vSplit) return { x: x0, y: inner.y, w: vSplit[0] - x0, h: inner.h };
+    return inner;   // one face, or a photo with no separator - keep it whole
+}
+
+// Cut once per photo and remembered: the same note can fill a country through
+// many repaints, and reading a canvas back is the one expensive step here.
+const sideCache = new Map();
+
+async function frontSideOf(imageId, url) {
+    if (sideCache.has(imageId)) return sideCache.get(imageId);
+    let result = { href: url, aspect: 1 };
+    try {
+        const img = await loadImage(url);
+        const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+        result = { href: url, aspect: w / h };
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        const rect = frontSideRect(ctx.getImageData(0, 0, w, h));
+        if (rect.w >= 2 && rect.h >= 2 && (rect.w !== w || rect.h !== h)) {
+            const out = document.createElement('canvas');
+            out.width = rect.w; out.height = rect.h;
+            out.getContext('2d').drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+            result = { href: out.toDataURL('image/jpeg', 0.88), aspect: rect.w / rect.h };
+        }
+    } catch (err) {
+        // A photo that cannot be read back is shown whole rather than not at
+        // all - both faces in a country beats an empty country.
+        console.warn('Could not cut one side out of', imageId, err);
+    }
+    sideCache.set(imageId, result);
+    return result;
 }
 
 // A pattern in objectBoundingBox units follows the country's outline at every
@@ -365,7 +495,8 @@ async function addFill(code, imageId, layers) {
 
     const defs = ensureDefs();
     if (!defs) return;
-    const box = fitBox(await imageAspect(url), boundsAspect(layers));
+    const side = await frontSideOf(imageId, url);
+    const box = fitBox(side.aspect, boundsAspect(layers));
     if (drawnFills.get(code) !== imageId) return;
 
     const NS = 'http://www.w3.org/2000/svg';
@@ -376,8 +507,8 @@ async function addFill(code, imageId, layers) {
     pattern.setAttribute('width', '1');
     pattern.setAttribute('height', '1');
     const image = document.createElementNS(NS, 'image');
-    image.setAttribute('href', url);
-    image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', url); // older WebKit
+    image.setAttribute('href', side.href);
+    image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', side.href); // older WebKit
     image.setAttribute('x', String(box.x));
     image.setAttribute('y', String(box.y));
     image.setAttribute('width', String(box.w));
@@ -392,11 +523,11 @@ async function addFill(code, imageId, layers) {
             renderer: fillRenderer,
             pane: 'noteFills',
             interactive: false,
-            // A photo has no single colour, so the outline is what says "this
-            // country is yours" at a glance and what keeps two neighbouring
-            // photos from running into one another.
-            color: FRAME_COLOR,
-            weight: 2.6,
+            // Exactly the border every other country is drawn with, so a
+            // filled country does not sit on the map in a heavier outline
+            // than its neighbours - a photo already sets it apart.
+            color: COUNTRY_BORDER.color,
+            weight: COUNTRY_BORDER.weight,
             opacity: 1,
             fillColor: `url(#${PATTERN_ID(code)})`,
             fillOpacity: 1,
@@ -522,7 +653,10 @@ export async function initMap() {
     // list, and in the world total. At world zoom the smallest are sub-pixel -
     // zoom in, or search for one by name, and it is there.
     L.geoJSON({ type: 'FeatureCollection', features }, {
-        style: { weight: 0.6, color: BORDER_COLOR, fillColor: MUTED_COLOR, fillOpacity: 0.1 },
+        style: {
+            weight: COUNTRY_BORDER.weight, color: COUNTRY_BORDER.color,
+            fillColor: MUTED_COLOR, fillOpacity: 0.1,
+        },
         onEachFeature: (feature, layer) => {
             register(canonicalCode(getCodeForFeature(feature)), feature.properties['name'], layer);
         }
