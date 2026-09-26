@@ -163,18 +163,25 @@ export function applyFilters(opts) {
         // whether it is coloured at all.
         const wasShown = state.shownCodes.has(code);
         const wasOwned = state.ownedCodes.has(code);
+        // What the country is PAINTED as, which in the photo map is not the
+        // same as whether it passes the filters: a country you have nothing
+        // from is left uncoloured there, because the photo map is about the
+        // photos and a map of red countries competes with them. shownCodes
+        // tracks the paint, so turning the photo map on or off is itself a
+        // change, and fades like every other change.
+        const painted = show && !(state.noteFills && !owned);
         if (animate) {
-            if (wasShown !== show || wasOwned !== owned) {
+            if (wasShown !== painted || wasOwned !== owned) {
                 changes.push({
                     layers,
                     from: styleFor(wasShown, wasOwned),
-                    to: styleFor(show, owned),
+                    to: styleFor(painted, owned),
                 });
             }
         } else {
-            layers.forEach(layer => layer.setStyle(styleFor(show, owned)));
+            layers.forEach(layer => layer.setStyle(styleFor(painted, owned)));
         }
-        if (show) state.shownCodes.add(code); else state.shownCodes.delete(code);
+        if (painted) state.shownCodes.add(code); else state.shownCodes.delete(code);
         if (owned) state.ownedCodes.add(code); else state.ownedCodes.delete(code);
     });
 
@@ -322,13 +329,18 @@ function imageAspect(url) {
 // A pattern in objectBoundingBox units follows the country's outline at every
 // zoom with no work per frame - but its coordinate space is squashed to the
 // shape's bounding box, so an image drawn at width 1, height 1 comes out
-// stretched. The sizing below undoes that squash and then scales the note up
-// until it covers the box, which is the same result as preserveAspectRatio
-// "slice" and, unlike "slice", survives the squashed space.
-export function coverBox(noteAspect, boxAspect) {
+// stretched. The sizing below undoes that squash, and then fits the WHOLE note
+// inside the country's box rather than blowing it up until it covers the box.
+//
+// Covering was the first attempt and it defeated the point of the feature: a
+// note is about twice as wide as it is tall, most countries are not, and
+// covering Brazil with a 2:1 note means enlarging it three times over until
+// all that is left on screen is a patch of its middle. Fitting shows the note.
+// The country keeps its colour around it, so nothing is left blank.
+export function fitBox(noteAspect, boxAspect) {
     const r = noteAspect / (boxAspect || 1);
-    const w = r >= 1 ? r : 1;
-    const h = r >= 1 ? 1 : 1 / r;
+    const w = r <= 1 ? r : 1;
+    const h = r <= 1 ? 1 : 1 / r;
     return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
 }
 
@@ -353,7 +365,7 @@ async function addFill(code, imageId, layers) {
 
     const defs = ensureDefs();
     if (!defs) return;
-    const box = coverBox(await imageAspect(url), boundsAspect(layers));
+    const box = fitBox(await imageAspect(url), boundsAspect(layers));
     if (drawnFills.get(code) !== imageId) return;
 
     const NS = 'http://www.w3.org/2000/svg';

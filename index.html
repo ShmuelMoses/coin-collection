@@ -312,12 +312,24 @@
         .modal-header-left { justify-content: flex-start; }
         .modal-header-right { justify-content: flex-end; }
         #share-icon-btn, #share-confirm-icon-btn, #share-cancel-icon-btn,
-        #organize-icon-btn, #organize-confirm-icon-btn, #organize-cancel-icon-btn {
+        #organize-icon-btn, #organize-confirm-icon-btn, #organize-cancel-icon-btn,
+        #map-photo-icon-btn, #map-photo-cancel-icon-btn {
             width: auto; padding: 0; margin: 0; background: transparent; border: none;
             color: var(--accent-owned); cursor: pointer; display: flex; align-items: center;
         }
-        #share-cancel-icon-btn, #organize-cancel-icon-btn { color: var(--accent-none); }
-        #organize-icon-btn { color: var(--text-dim); }
+        #share-cancel-icon-btn, #organize-cancel-icon-btn,
+        #map-photo-cancel-icon-btn { color: var(--accent-none); }
+        #organize-icon-btn, #map-photo-icon-btn { color: var(--text-dim); }
+        #map-photo-icon-btn:hover { opacity: 0.75; }
+        /* What a mode is asking for, above the photos it applies to. */
+        .mode-note {
+            font-size: 13px; color: var(--text-dim); line-height: 1.6;
+            margin: 0 0 14px 0; text-align: center;
+        }
+        /* While a photo is being picked, the cells say they can be picked. */
+        .pickable { cursor: pointer; }
+        .pickable img { outline: 1px solid var(--border); outline-offset: 2px; }
+        .pickable:hover img { outline: 2px solid var(--accent-owned); }
         #share-icon-btn:hover, #share-confirm-icon-btn:hover,
         #organize-icon-btn:hover, #organize-confirm-icon-btn:hover { opacity: 0.75; }
         #modal-images { display: block; }
@@ -569,6 +581,12 @@
         <div id="modal">
             <div id="modal-header">
                 <div class="modal-header-side modal-header-left">
+                    <button id="map-photo-icon-btn" data-tip="Choose the photo shown on the map" aria-label="Choose the photo shown on the map">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><polyline points="21 16 15.5 10.5 7 19"/></svg>
+                    </button>
+                    <button id="map-photo-cancel-icon-btn" data-tip="Done" aria-label="Done" style="display:none;">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+                    </button>
                     <button id="organize-icon-btn" data-tip="Organize into categories" aria-label="Organize into categories">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                     </button>

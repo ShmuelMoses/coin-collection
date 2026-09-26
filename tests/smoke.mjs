@@ -74,6 +74,7 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'cv-main', 'map', 'list-view',
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
+    'map-photo-icon-btn', 'map-photo-cancel-icon-btn',
     'share-icon-btn', 'share-confirm-icon-btn', 'share-cancel-icon-btn',
     'enlarge-overlay', 'enlarge-img', 'enlarge-actions', 'set-background-btn',
     'photo-map-btn',
@@ -1649,29 +1650,34 @@ console.log('\nA photo of your own as a country\'s fill');
     // An SVG pattern in objectBoundingBox units lives in a space squashed to
     // the shape's bounding box. Drawing the note at 1x1 there is the easy thing
     // to do and it stretches every note into the shape of its country.
-    const square = map.coverBox(1, 1);
+    const square = map.fitBox(1, 1);
     check('a square note in a square country fills it exactly',
         square.w === 1 && square.h === 1 && square.x === 0 && square.y === 0,
         JSON.stringify(square));
 
-    // A banknote (wide) in a tall country: it must be widened in the squashed
-    // space, not left at 1, or it comes out as a tall thin note.
-    const tall = map.coverBox(2, 0.5);
-    check('a wide note in a tall country is widened, not squashed',
-        tall.w === 4 && tall.h === 1, JSON.stringify(tall));
-    check('and it is centred on the country, so the middle of the note shows',
-        tall.x === -1.5 && tall.y === 0, JSON.stringify(tall));
+    // A 2:1 note in a country twice as tall as it is wide. Covering that box
+    // would enlarge the note four times over and leave a patch of its middle
+    // on screen, which is what shipped in 2.29 and hid every note.
+    const tall = map.fitBox(2, 0.5);
+    check('a wide note in a tall country is shown WHOLE, not enlarged to cover',
+        tall.w === 1 && tall.h === 0.25, JSON.stringify(tall));
+    check('and it is centred, so the country wears it in the middle',
+        tall.x === 0 && tall.y === 0.375, JSON.stringify(tall));
 
-    const wide = map.coverBox(0.5, 2);
-    check('a tall note in a wide country is heightened the same way',
-        wide.w === 1 && wide.h === 4 && wide.y === -1.5, JSON.stringify(wide));
+    const wide = map.fitBox(0.5, 2);
+    check('a tall note in a wide country is fitted the same way',
+        wide.w === 0.25 && wide.h === 1 && wide.x === 0.375, JSON.stringify(wide));
 
-    [[1.6, 0.3], [0.4, 3.2], [2.5, 2.5], [1, 9]].forEach(([note, box]) => {
-        const b = map.coverBox(note, box);
-        check(`the country is always covered (note ${note} in box ${box})`,
-            b.w >= 1 - 1e-9 && b.h >= 1 - 1e-9 &&
-            Math.abs((b.w * box) / b.h - note) < 1e-9,
+    [[2.13, 0.76], [1.6, 0.3], [0.4, 3.2], [2.5, 2.5], [1, 9]].forEach(([note, box]) => {
+        const b = map.fitBox(note, box);
+        check(`the whole note is inside the country's box (note ${note} in box ${box})`,
+            b.w <= 1 + 1e-9 && b.h <= 1 + 1e-9 &&
+            (Math.abs(b.w - 1) < 1e-9 || Math.abs(b.h - 1) < 1e-9),
             JSON.stringify(b));
+        // The point of all of it: no note is ever distorted. A circle printed
+        // on a note has to come out a circle on the map.
+        check(`and it keeps its own shape (note ${note} in box ${box})`,
+            Math.abs((b.w * box) / b.h - note) < 1e-9, JSON.stringify(b));
     });
 
     // --- the choice is stored with the country and saved ---
@@ -1724,6 +1730,38 @@ console.log('\nA photo of your own as a country\'s fill');
         /fillPane\.style\.zIndex = 450/.test(mapjs4));
     check('only the chosen countries become SVG, so the canvas map stays fast',
         /preferCanvas: true/.test(mapjs4) && /L\.svg\(\{ pane: 'noteFills'/.test(mapjs4));
+
+    // --- choosing the photo is somewhere it can be FOUND ---
+    // It lived only on the enlarged photo in 2.29 and went unfound. It is now
+    // a mode in the country window's header, next to organising and sharing.
+    const modaljs5 = fs4.readFileSync('./js/modal.js', 'utf8');
+    check('the choice has a button of its own in the country window',
+        /id="map-photo-icon-btn"/.test(html4) &&
+        /getElementById\('map-photo-icon-btn'\)\.onclick/.test(modaljs5));
+    check('it is a mode, so the photos themselves are what you tap',
+        /let mapPhotoMode = false;/.test(modaljs5) &&
+        /if \(mapPhotoMode\) \{ chooseMapPhoto\(img\.id\); return; \}/.test(modaljs5));
+    check('and the mode says what it wants, above the photos',
+        /Tap the photo you want this country to wear on the map/.test(modaljs5));
+    check('leaving the country leaves the mode',
+        /mapPhotoMode = false;\n\n    const allImages/.test(modaljs5) ||
+        /organizeMode = false;\n    mapPhotoMode = false;/.test(modaljs5));
+
+    // --- in the photo map, countries you have nothing from lose their colour ---
+    check('a country you own nothing from is left uncoloured in the photo map',
+        /const painted = show && !\(state\.noteFills && !owned\);/.test(mapjs4),
+        'the "none yet" red would otherwise cover most of the photo map');
+    check('and switching the photo map on is itself an animated change',
+        /if \(painted\) state\.shownCodes\.add\(code\)/.test(mapjs4) &&
+        (() => {
+            // Only this handler's own body - a lazy match would happily run
+            // on to the NEXT handler's applyFilters and pass regardless.
+            const src = fs4.readFileSync('./js/app.js', 'utf8');
+            const at = src.indexOf("photo-map-btn').onclick");
+            return at !== -1 && /applyFilters\(\{ animate: true/
+                .test(src.slice(at, src.indexOf('};', at)));
+        })(),
+        'the toggle must repaint the countries, not only rebuild the fills');
 
     // --- and it is a mode you can leave ---
     const appjs4 = fs4.readFileSync('./js/app.js', 'utf8');

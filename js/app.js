@@ -1074,7 +1074,10 @@ function initControls() {
     document.getElementById('photo-map-btn').onclick = () => {
         state.noteFills = !state.noteFills;
         renderPhotoMapButton();
-        refreshNoteFills();
+        // Through applyFilters, not straight to refreshNoteFills: the switch
+        // also changes what the countries WITHOUT a photo are painted, and
+        // that change should fade like every other one.
+        applyFilters({ animate: true, durationMs: TRANSITION_MS });
     };
 
     function updateGhostSuggestion() {
