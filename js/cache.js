@@ -665,6 +665,33 @@ export function releaseModalObjectUrls() {
     modalUrlPending.clear();
 }
 
+// The map's own thumbnails, for the countries filled with a photo. They need a
+// SEPARATE cache from the modal's: the modal revokes everything it owns when it
+// closes, and the map's fills have to survive that - closing a country window
+// must not blank the map behind it.
+const mapFillUrls = new Map();
+const mapFillPending = new Map();
+
+export function mapFillThumbUrl(fileId) {
+    if (mapFillUrls.has(fileId)) return Promise.resolve(mapFillUrls.get(fileId));
+    if (mapFillPending.has(fileId)) return mapFillPending.get(fileId);
+    const p = getThumbnailBlobUrl(fileId).then(url => {
+        mapFillPending.delete(fileId);
+        if (mapFillUrls.has(fileId)) { URL.revokeObjectURL(url); return mapFillUrls.get(fileId); }
+        mapFillUrls.set(fileId, url);
+        return url;
+    }).catch(err => { mapFillPending.delete(fileId); throw err; });
+    mapFillPending.set(fileId, p);
+    return p;
+}
+
+export function releaseMapFillUrls() {
+    mapFillUrls.forEach(url => URL.revokeObjectURL(url));
+    mapFillUrls.clear();
+    mapFillPending.forEach(p => p.then(url => URL.revokeObjectURL(url)).catch(() => {}));
+    mapFillPending.clear();
+}
+
 let enlargeObjectUrl = null;
 export function setEnlargeObjectUrl(url) {
     if (enlargeObjectUrl) URL.revokeObjectURL(enlargeObjectUrl);

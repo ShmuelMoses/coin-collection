@@ -6,7 +6,8 @@ import { applyOrder, describeError } from './util.js';
 import { modalThumbUrl, releaseModalObjectUrls, getFullImageBlobUrl, setEnlargeObjectUrl, clearThumbQueue } from './cache.js';
 import {
     getCountryLayout, saveLayoutsToDrive, markLayoutDirty, propagateSharedLayout,
-    uncategorizedLabel, DEFAULT_SECTION_NAME
+    uncategorizedLabel, DEFAULT_SECTION_NAME,
+    getCountryBackgroundId, setCountryBackground
 } from './layouts.js';
 import { buildCountryExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, showProgressDialog } from './dialog.js';
@@ -39,6 +40,12 @@ const ICON_BTN_STYLE =
 const HEADING_STYLE = 'color:var(--text-dim);font-size:14px;font-weight:normal;margin:16px 0 8px 0;text-align:center;border-top:1px solid var(--border);padding-top:12px;';
 
 export function isModalOpen() { return modal.style.display === 'block'; }
+
+// map.js imports this module (clicking a country opens the modal), so this one
+// cannot import map.js back. app.js, which already owns the wiring between the
+// two, hands the map's refresh in here instead.
+let refreshNoteFills = () => {};
+export function setNoteFillsRefresher(fn) { refreshNoteFills = fn || (() => {}); }
 
 // Set by app.js when a collection opens, so a shared country file can be named
 // after the collection it came from.
@@ -114,6 +121,15 @@ function renderImageGroup(images) {
         };
         refreshSelectedLook();
         wrapper.appendChild(el);
+        // Which photo this country wears on the map, marked where the photos
+        // are - otherwise the only way to find out is to open them one by one.
+        if (getCountryBackgroundId(currentModalCode) === img.id) {
+            const badge = document.createElement('span');
+            badge.className = 'map-photo-badge';
+            badge.title = 'Shown on the map';
+            badge.textContent = '\u25C6';
+            wrapper.appendChild(badge);
+        }
         modalThumbUrl(img.id)
             .then(url => { el.src = url; spinner.remove(); })
             .catch(err => {
@@ -477,10 +493,46 @@ function showEnlarged(fileId) {
     const overlay = document.getElementById('enlarge-overlay');
     const img = document.getElementById('enlarge-img');
     overlay.style.display = 'block';
+    refreshBackgroundButton(fileId);
     getFullImageBlobUrl(fileId).then(url => {
         setEnlargeObjectUrl(url); // revokes the previous full-size image
         img.src = url;
     }).catch(err => console.error('Could not open full image', fileId, err));
+}
+
+// ---------- the photo that fills this country on the map ----------
+// The choice lives on the enlarged photo rather than on every thumbnail: it is
+// a decision about ONE picture, made while looking at it, and putting a control
+// on all forty cells to be used once would cost more than it gives.
+let enlargedId = null;
+
+function refreshBackgroundButton(fileId) {
+    enlargedId = fileId;
+    const btn = document.getElementById('set-background-btn');
+    if (!btn) return;
+    const chosen = getCountryBackgroundId(currentModalCode) === fileId;
+    btn.textContent = chosen ? 'Remove from the map' : 'Show this one on the map';
+    btn.classList.toggle('is-chosen', chosen);
+    // It writes to Drive, like every other change to a country's layout.
+    btn.classList.toggle('offline-disabled', !!state.offline);
+}
+
+async function toggleBackground() {
+    const btn = document.getElementById('set-background-btn');
+    if (!btn || btn.classList.contains('offline-disabled') || !enlargedId) return;
+    const code = currentModalCode;
+    const next = getCountryBackgroundId(code) === enlargedId ? '' : enlargedId;
+    btn.disabled = true;
+    try {
+        await setCountryBackground(code, next);
+        refreshBackgroundButton(enlargedId);
+        renderModalContent(code);   // the tick on the chosen thumbnail
+        refreshNoteFills();         // and the map behind the window
+    } catch (err) {
+        await alertDialog(describeError(err, 'That choice could not be saved'));
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // ---------- wiring ----------
@@ -491,7 +543,13 @@ export function initModal() {
         this.style.display = 'none';
         document.getElementById('enlarge-img').removeAttribute('src');
         setEnlargeObjectUrl(null);
+        enlargedId = null;
     };
+
+    // Inside the overlay, so the click that chooses a photo must not also be
+    // the click that closes the overlay.
+    const bgBtn = document.getElementById('set-background-btn');
+    bgBtn.onclick = e => { e.stopPropagation(); toggleBackground(); };
 
     document.getElementById('share-icon-btn').onclick = () => setShareSelectMode(true);
     document.getElementById('share-cancel-icon-btn').onclick = () => setShareSelectMode(false);

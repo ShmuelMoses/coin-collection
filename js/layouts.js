@@ -65,6 +65,28 @@ export function getCountryLayout(code) {
 // only what it falls back to.
 export const DEFAULT_SECTION_NAME = 'Uncategorized';
 
+// ---------- the photo that fills a country on the map ----------
+// One image id per country, kept in the same per-country layout entry as the
+// categories, so it travels with the collection to every device and needs no
+// second file. Countries with no choice are simply coloured as before.
+export function getCountryBackgroundId(code) {
+    const id = getCountryLayout(code).backgroundImageId;
+    return typeof id === 'string' ? id : '';
+}
+
+// Its own save rather than the organise editor's: choosing a background is one
+// field and one click, with no draft to commit and nothing to cancel, so making
+// it wait for the organise tick would be a worse deal than saving at once.
+export async function setCountryBackground(code, imageId) {
+    const layout = getCountryLayout(code);
+    const next = imageId || '';
+    if ((layout.backgroundImageId || '') === next) return;
+    if (next) layout.backgroundImageId = next;
+    else delete layout.backgroundImageId;
+    markLayoutDirty(code);
+    await saveLayoutsToDrive();
+}
+
 export function uncategorizedLabel(layout) {
     const name = layout && layout.uncategorizedName;
     return (name && name.trim()) ? name.trim() : DEFAULT_SECTION_NAME;

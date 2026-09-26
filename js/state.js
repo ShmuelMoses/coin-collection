@@ -22,6 +22,12 @@ export const state = {
     // only have coins from is not owned, so it is painted red like any other
     // country you have nothing from. One you have both from is always green.
     itemType: 'both',
+    // The photo map: each country you own something from is filled with the
+    // note or coin you chose for it, instead of a flat colour. Off by default -
+    // it is a second way of looking at the same collection, not a replacement
+    // for the colouring, and at world zoom the small countries are too small
+    // to show a picture.
+    noteFills: false,
     currentView: 'map',     // 'map' | 'list'
     searchQuery: '',
     // Countries whose name label is pinned on because they were clicked.
@@ -74,6 +80,7 @@ export function resetCollectionState() {
     state.ownedCodes = new Set();
     state.unmappedFolders = [];
     state.itemType = 'both';
+    state.noteFills = false;
 }
 
 export function matchesQuery(code, name, query) {

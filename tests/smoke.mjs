@@ -75,7 +75,8 @@ function mkEl(id, tag) { const e = new El(tag); e.id = id; byId.set(id, e); retu
     'modal-backdrop', 'modal', 'modal-header', 'modal-title', 'modal-images',
     'organize-icon-btn', 'organize-confirm-icon-btn', 'organize-cancel-icon-btn',
     'share-icon-btn', 'share-confirm-icon-btn', 'share-cancel-icon-btn',
-    'enlarge-overlay', 'enlarge-img',
+    'enlarge-overlay', 'enlarge-img', 'enlarge-actions', 'set-background-btn',
+    'photo-map-btn',
     'cache-modal-backdrop', 'cache-modal', 'cache-modal-stats', 'cache-modal-actions',
     'cache-clear-btn', 'cache-close-btn', 'info-modal-title',
     'info-collection', 'info-app', 'info-errors', 'delete-collection-btn',
@@ -140,7 +141,11 @@ Object.defineProperty(global, 'navigator', {
 // Real handles, so the fade loop can be cancelled the way a browser cancels it.
 global.requestAnimationFrame = fn => setTimeout(() => fn(Date.now()), 8);
 global.cancelAnimationFrame = h => clearTimeout(h);
-global.URL.createObjectURL = () => 'blob:stub';
+// Unique, like the real thing: one URL per call. A single shared string would
+// let two caches holding DIFFERENT urls look identical, and hide exactly the
+// kind of ownership bug these caches exist to prevent.
+let blobUrlSeq = 0;
+global.URL.createObjectURL = () => 'blob:stub-' + (++blobUrlSeq);
 global.FileReader = class {
     readAsDataURL() { setTimeout(() => { this.result = 'data:image/jpeg;base64,QUJD'; this.onload && this.onload(); }, 0); }
 };
@@ -739,7 +744,7 @@ console.log('\nReset, shortcuts, tooltips and duplicate folders');
         /#cache-modal \{ text-align: left; width: 420px/.test(html), 'still 310px');
 
     // --- 3/4. Shortcuts: one table drives keys, hints and the help list ---
-    const keys = ['i', 'v', 'c', 't', 'r', 'b', '/'];
+    const keys = ['i', 'v', 'c', 't', 'p', 'r', 'b', '/'];
     check('every planned shortcut is defined once, in one table',
         keys.every(k => new RegExp(`key: '\\\\${k === '/' ? '/' : k}'`).test(appjs) ||
                         new RegExp(`key: '${k}'`).test(appjs)),
@@ -1637,6 +1642,96 @@ check('a Hebrew device locale does not leak into the date', (() => {
         { year: 'numeric', month: 'long', day: 'numeric' });
     return /August/.test(d);
 })());
+
+console.log('\nA photo of your own as a country\'s fill');
+{
+    // --- the note keeps its own proportions inside the country's shape ---
+    // An SVG pattern in objectBoundingBox units lives in a space squashed to
+    // the shape's bounding box. Drawing the note at 1x1 there is the easy thing
+    // to do and it stretches every note into the shape of its country.
+    const square = map.coverBox(1, 1);
+    check('a square note in a square country fills it exactly',
+        square.w === 1 && square.h === 1 && square.x === 0 && square.y === 0,
+        JSON.stringify(square));
+
+    // A banknote (wide) in a tall country: it must be widened in the squashed
+    // space, not left at 1, or it comes out as a tall thin note.
+    const tall = map.coverBox(2, 0.5);
+    check('a wide note in a tall country is widened, not squashed',
+        tall.w === 4 && tall.h === 1, JSON.stringify(tall));
+    check('and it is centred on the country, so the middle of the note shows',
+        tall.x === -1.5 && tall.y === 0, JSON.stringify(tall));
+
+    const wide = map.coverBox(0.5, 2);
+    check('a tall note in a wide country is heightened the same way',
+        wide.w === 1 && wide.h === 4 && wide.y === -1.5, JSON.stringify(wide));
+
+    [[1.6, 0.3], [0.4, 3.2], [2.5, 2.5], [1, 9]].forEach(([note, box]) => {
+        const b = map.coverBox(note, box);
+        check(`the country is always covered (note ${note} in box ${box})`,
+            b.w >= 1 - 1e-9 && b.h >= 1 - 1e-9 &&
+            Math.abs((b.w * box) / b.h - note) < 1e-9,
+            JSON.stringify(b));
+    });
+
+    // --- the choice is stored with the country and saved ---
+    const layouts = await import('./js/layouts.js');
+    state.state.currentCollectionId = 'col-bg';
+    check('a country has no photo of its own until one is chosen',
+        layouts.getCountryBackgroundId('FRA') === '');
+
+    await layouts.setCountryBackground('FRA', 'img-7');
+    check('choosing one stores it on that country',
+        layouts.getCountryBackgroundId('FRA') === 'img-7');
+    check('and not on any other', layouts.getCountryBackgroundId('DEU') === '');
+    check('it is kept with the categories, so it reaches every device',
+        layouts.getCountryLayout('FRA').backgroundImageId === 'img-7');
+
+    await layouts.setCountryBackground('FRA', '');
+    check('and removing it leaves no empty field behind',
+        layouts.getCountryBackgroundId('FRA') === '' &&
+        !('backgroundImageId' in layouts.getCountryLayout('FRA')),
+        JSON.stringify(layouts.getCountryLayout('FRA')));
+
+    // --- the map's thumbnails outlive the window they were chosen in ---
+    // The modal revokes every URL it owns when it closes. If the map drew its
+    // fills from that same cache, closing a country window would blank the map
+    // behind it.
+    idbStores.images.clear();
+    idbStores.images.set('bg1_thumb', new Blob(['x']));
+    const cache = await import('./js/cache.js');
+    const mapUrl = await cache.mapFillThumbUrl('bg1');
+    await cache.modalThumbUrl('bg1');
+    const revoked = [];
+    const prevRevoke = URL.revokeObjectURL;
+    URL.revokeObjectURL = u => { revoked.push(u); };
+    cache.releaseModalObjectUrls();
+    URL.revokeObjectURL = prevRevoke;
+    check('closing a country window does not revoke the map\'s own thumbnails',
+        !revoked.includes(mapUrl), JSON.stringify({ mapUrl, revoked }));
+    check('and the map still has its URL afterwards',
+        (await cache.mapFillThumbUrl('bg1')) === mapUrl);
+
+    // --- the fills never steal a click from the country underneath ---
+    const fs4 = await import('node:fs');
+    const html4 = fs4.readFileSync('./index.html', 'utf8');
+    const mapjs4 = fs4.readFileSync('./js/map.js', 'utf8');
+    check('the filled shapes are decoration - the click belongs to the country',
+        /\.note-fill \{ pointer-events: none; \}/.test(html4) &&
+        /interactive: false/.test(mapjs4) &&
+        /fillPane\.style\.pointerEvents = 'none'/.test(mapjs4));
+    check('the fills sit above the map and below the country names',
+        /fillPane\.style\.zIndex = 450/.test(mapjs4));
+    check('only the chosen countries become SVG, so the canvas map stays fast',
+        /preferCanvas: true/.test(mapjs4) && /L\.svg\(\{ pane: 'noteFills'/.test(mapjs4));
+
+    // --- and it is a mode you can leave ---
+    const appjs4 = fs4.readFileSync('./js/app.js', 'utf8');
+    check('Reset puts the map back to colours',
+        /state\.noteFills = false;\n    renderColorModeButton/.test(appjs4),
+        'reset left the photo map on');
+    state.state.currentCollectionId = null;
+}
 
 console.log('\nService worker shell');
 {

@@ -1,7 +1,7 @@
 // The Leaflet map: countries, the antique frame, colouring and labels.
 
 import {
-    MUTED_COLOR, BORDER_COLOR, styleFor,
+    MUTED_COLOR, BORDER_COLOR, FRAME_COLOR, styleFor,
     REVEAL_MS, COUNTRY_FADE_MS, REVEAL_MAX_STEP_MS
 } from './config.js';
 import { state, passesFilters, matchesQuery, isOwned } from './state.js';
@@ -9,9 +9,11 @@ import {
     getProjectedFeatures, getCodeForFeature,
     buildMapFrame, FRAME_BOUNDS, COMPASS_BOUNDS
 } from './geo.js';
-import { canonicalCode } from './countries.js';
+import { canonicalCode, filterEntry } from './countries.js';
 import { openModal } from './modal.js';
 import { countryRowEls } from './list.js';
+import { getCountryBackgroundId } from './layouts.js';
+import { mapFillThumbUrl, releaseMapFillUrls } from './cache.js';
 
 // Decorative antique-map compass rose. Added with L.svgOverlay bound to a real
 // lat/lng box rather than a fixed-pixel marker, so it scales with the map
@@ -180,6 +182,8 @@ export function applyFilters(opts) {
         item.style.display = passesFilters(code, item.dataset.name) ? 'flex' : 'none';
     });
     refreshLabels();
+    // The same filters decide which countries are filled with a photo.
+    refreshNoteFills();
 
     cancelFade();
     if (animate && changes.length) {
@@ -254,7 +258,186 @@ export function invalidateMapSize() {
 }
 
 export function destroyMap() {
+    clearFills();
+    fillPane = null;
+    fillRenderer = null;
+    fillGroup = null;
+    fillDefs = null;
     if (leafletMap) { leafletMap.remove(); leafletMap = null; }
+}
+
+// ---------- the photo map ----------
+// Countries you own something from can be filled with the note or coin you
+// picked for them instead of a flat colour.
+//
+// The map itself is drawn on a CANVAS, which is what keeps 260 countries and
+// 63,000 points smooth on a phone - and a canvas cannot fill a shape with an
+// image through Leaflet. So the filled countries, and ONLY those, get a second
+// polygon in an SVG layer above the canvas: a handful of SVG paths costs
+// nothing, where moving the whole map to SVG would not.
+let fillPane = null;
+let fillRenderer = null;
+let fillGroup = null;
+let fillDefs = null;
+// code -> the image id it is currently drawn with, so a refresh that changes
+// nothing does nothing.
+const drawnFills = new Map();
+
+const PATTERN_ID = code => 'notefill-' + code;
+
+function ensureFillLayer() {
+    if (fillGroup) return;
+    // Above the country canvas (overlayPane, 400) and below the name labels
+    // (markerPane, 600).
+    fillPane = leafletMap.createPane('noteFills');
+    fillPane.style.zIndex = 450;
+    // The fills are decoration over the real countries: every click, hover and
+    // tooltip still belongs to the canvas polygon underneath.
+    fillPane.style.pointerEvents = 'none';
+    fillRenderer = L.svg({ pane: 'noteFills', padding: 0.2 });
+    fillGroup = L.layerGroup([], { pane: 'noteFills' }).addTo(leafletMap);
+    fillRenderer.addTo(leafletMap);
+}
+
+function ensureDefs() {
+    const svg = fillRenderer && fillRenderer._container;
+    if (!svg) return null;
+    if (fillDefs && fillDefs.parentNode === svg) return fillDefs;
+    fillDefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    svg.appendChild(fillDefs);
+    return fillDefs;
+}
+
+// The natural size of a thumbnail, so the note can be drawn in its own
+// proportions rather than squashed into the country's.
+function imageAspect(url) {
+    return new Promise(resolve => {
+        const probe = new Image();
+        probe.onload = () => resolve((probe.naturalWidth || 1) / (probe.naturalHeight || 1));
+        probe.onerror = () => resolve(1);
+        probe.src = url;
+    });
+}
+
+// A pattern in objectBoundingBox units follows the country's outline at every
+// zoom with no work per frame - but its coordinate space is squashed to the
+// shape's bounding box, so an image drawn at width 1, height 1 comes out
+// stretched. The sizing below undoes that squash and then scales the note up
+// until it covers the box, which is the same result as preserveAspectRatio
+// "slice" and, unlike "slice", survives the squashed space.
+export function coverBox(noteAspect, boxAspect) {
+    const r = noteAspect / (boxAspect || 1);
+    const w = r >= 1 ? r : 1;
+    const h = r >= 1 ? 1 : 1 / r;
+    return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+function boundsAspect(layers) {
+    let bounds = null;
+    layers.forEach(layer => {
+        if (!layer.getBounds) return;
+        const b = layer.getBounds();
+        bounds = bounds ? bounds.extend(b) : L.latLngBounds(b.getSouthWest(), b.getNorthEast());
+    });
+    if (!bounds) return 1;
+    const w = Math.abs(bounds.getEast() - bounds.getWest());
+    const h = Math.abs(bounds.getNorth() - bounds.getSouth());
+    return (h > 0 ? w / h : 1) || 1;
+}
+
+async function addFill(code, imageId, layers) {
+    const url = await mapFillThumbUrl(imageId);
+    // The country may have been switched off, or a different photo chosen,
+    // while the thumbnail was being read.
+    if (drawnFills.get(code) !== imageId || !fillGroup) { return; }
+
+    const defs = ensureDefs();
+    if (!defs) return;
+    const box = coverBox(await imageAspect(url), boundsAspect(layers));
+    if (drawnFills.get(code) !== imageId) return;
+
+    const NS = 'http://www.w3.org/2000/svg';
+    const pattern = document.createElementNS(NS, 'pattern');
+    pattern.setAttribute('id', PATTERN_ID(code));
+    pattern.setAttribute('patternUnits', 'objectBoundingBox');
+    pattern.setAttribute('patternContentUnits', 'objectBoundingBox');
+    pattern.setAttribute('width', '1');
+    pattern.setAttribute('height', '1');
+    const image = document.createElementNS(NS, 'image');
+    image.setAttribute('href', url);
+    image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', url); // older WebKit
+    image.setAttribute('x', String(box.x));
+    image.setAttribute('y', String(box.y));
+    image.setAttribute('width', String(box.w));
+    image.setAttribute('height', String(box.h));
+    image.setAttribute('preserveAspectRatio', 'none'); // the sizing above is the fit
+    pattern.appendChild(image);
+    defs.appendChild(pattern);
+
+    layers.forEach(layer => {
+        if (!layer.getLatLngs) return;
+        L.polygon(layer.getLatLngs(), {
+            renderer: fillRenderer,
+            pane: 'noteFills',
+            interactive: false,
+            // A photo has no single colour, so the outline is what says "this
+            // country is yours" at a glance and what keeps two neighbouring
+            // photos from running into one another.
+            color: FRAME_COLOR,
+            weight: 2.6,
+            opacity: 1,
+            fillColor: `url(#${PATTERN_ID(code)})`,
+            fillOpacity: 1,
+            className: 'note-fill',
+        }).addTo(fillGroup);
+    });
+}
+
+function clearFills() {
+    drawnFills.clear();
+    if (fillGroup) fillGroup.clearLayers();
+    if (fillDefs) fillDefs.innerHTML = '';
+    releaseMapFillUrls();
+}
+
+function isShownItem(code, imageId) {
+    const entry = state.cvCountryMap[code];
+    if (!entry) return false;
+    const shown = filterEntry(entry, state.itemType);
+    if (!shown) return false;
+    if (shown.own.some(i => i.id === imageId)) return true;
+    return Object.values(shown.historical || {}).some(list => list.some(i => i.id === imageId));
+}
+
+// Rebuilt rather than patched: the set is small, and the alternative is
+// tracking which country changed for which of half a dozen reasons.
+export function refreshNoteFills() {
+    if (!leafletMap) return;
+    if (!state.noteFills) { clearFills(); return; }
+    ensureFillLayer();
+
+    const wanted = new Map();
+    Object.entries(state.countryLayers).forEach(([code, layers]) => {
+        if (!isOwned(code)) return;
+        if (!passesFilters(code, state.countryNameLookup[code] || code)) return;
+        const imageId = getCountryBackgroundId(code);
+        // The chosen photo must be one the view is actually showing: a
+        // banknote picked for a country must not go on filling it while the
+        // map is switched to coins.
+        if (imageId && isShownItem(code, imageId)) wanted.set(code, { imageId, layers });
+    });
+
+    let same = wanted.size === drawnFills.size;
+    if (same) for (const [code, w] of wanted) if (drawnFills.get(code) !== w.imageId) { same = false; break; }
+    if (same) return;
+
+    if (fillGroup) fillGroup.clearLayers();
+    if (fillDefs) fillDefs.innerHTML = '';
+    drawnFills.clear();
+    wanted.forEach((w, code) => {
+        drawnFills.set(code, w.imageId);
+        addFill(code, w.imageId, w.layers).catch(err => console.warn('Could not fill', code, err));
+    });
 }
 
 // ---------- construction ----------

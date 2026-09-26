@@ -18,11 +18,13 @@ import {
     kindCounts, KIND_BANKNOTE, KIND_COIN, KIND_UNKNOWN, findUnmappedFolders
 } from './countries.js';
 import { loadLayouts, resetLayouts } from './layouts.js';
-import { initModal, closeModal, isModalOpen, setModalCollectionName } from './modal.js';
+import {
+    initModal, closeModal, isModalOpen, setModalCollectionName, setNoteFillsRefresher
+} from './modal.js';
 import { renderList } from './list.js';
 import {
     initMap, destroyMap, applyFilters, fitFrameToViewport,
-    focusOnMatches, invalidateMapSize
+    focusOnMatches, invalidateMapSize, refreshNoteFills
 } from './map.js';
 import { buildCollectionExport, shareOrDownloadFile, isExportCancelled } from './export.js';
 import { alertDialog, confirmDialog, showProgressDialog, showChoiceDialog, isDialogOpen } from './dialog.js';
@@ -733,6 +735,7 @@ async function showCollectionView(col, countries, opts) {
 
     renderViewToggle();
     renderItemTypeButton();
+    renderPhotoMapButton();
     updateConnectionUi();
     await initMap();
     // Which folders produced nothing. Only answerable once the map is built,
@@ -829,6 +832,16 @@ function renderItemTypeButton() {
     setTip(btn, mode.label);
 }
 
+// The photo map is a way of LOOKING at the collection, like the colour mode and
+// the banknote/coin switch, so it says which state it is in rather than what
+// pressing it would do - the same as its neighbours in the row.
+function renderPhotoMapButton() {
+    const btn = document.getElementById('photo-map-btn');
+    if (!btn) return;
+    btn.classList.toggle('active', !!state.noteFills);
+    setTip(btn, state.noteFills ? 'Map: your photos' : 'Map: colours');
+}
+
 // ---------- how the Drive folder is meant to look ----------
 // Shown once the first time each collection is opened, and available any time
 // from the info panel. Nothing about the naming scheme is discoverable from
@@ -883,6 +896,7 @@ const SHORTCUTS = [
     { key: 'v', code: 'KeyV',  id: 'view-toggle-btn', label: 'Map / list view' },
     { key: 'c', code: 'KeyC',  id: 'color-mode-btn',  label: 'Colouring: have / none / both' },
     { key: 't', code: 'KeyT',  id: 'item-type-btn',   label: 'Type: banknotes / coins / both' },
+    { key: 'p', code: 'KeyP',  id: 'photo-map-btn',   label: 'Map: colours / your photos' },
     { key: 'r', code: 'KeyR',  id: 'reset-btn',       label: 'Reset the view' },
     { key: 'b', code: 'KeyB',  id: 'back-btn',        label: 'Back to My Collections' },
     { key: '/', code: 'Slash', id: null,              label: 'Jump to the search box',
@@ -992,8 +1006,10 @@ function resetView() {
     state.clickedLabelCodes.clear();
     state.colorMode = 'both';
     state.itemType = 'both';
+    state.noteFills = false;
     renderColorModeButton();
     renderItemTypeButton();
+    renderPhotoMapButton();
     rebuildCollectionData();
     renderList();
     applyFilters({ animate: true });
@@ -1053,6 +1069,12 @@ function initControls() {
         rebuildCollectionData();
         renderList();
         applyFilters({ animate: true, durationMs: TRANSITION_MS });
+    };
+
+    document.getElementById('photo-map-btn').onclick = () => {
+        state.noteFills = !state.noteFills;
+        renderPhotoMapButton();
+        refreshNoteFills();
     };
 
     function updateGhostSuggestion() {
@@ -1460,6 +1482,11 @@ if ('serviceWorker' in navigator) {
         });
     });
 }
+
+// The country window changes which photo a country wears; the map is what
+// draws it. map.js already imports the modal, so the refresh is handed over
+// here rather than imported back the other way.
+setNoteFillsRefresher(refreshNoteFills);
 
 initModal();
 initControls();
