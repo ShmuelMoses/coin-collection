@@ -294,6 +294,9 @@ let fillDefs = null;
 // code -> the image id it is currently drawn with, so a refresh that changes
 // nothing does nothing.
 const drawnFills = new Map();
+// code -> { pattern, image, bounds }, so every photo can be put back in place
+// when the map moves.
+const patterns = new Map();
 
 const PATTERN_ID = code => 'notefill-' + code;
 
@@ -309,6 +312,7 @@ function ensureFillLayer() {
     fillRenderer = L.svg({ pane: 'noteFills', padding: 0.2 });
     fillGroup = L.layerGroup([], { pane: 'noteFills' }).addTo(leafletMap);
     fillRenderer.addTo(leafletMap);
+    leafletMap.on('zoomend viewreset moveend', repositionFills);
 }
 
 function ensureDefs() {
@@ -456,35 +460,54 @@ async function frontSideOf(imageId, url) {
     return result;
 }
 
-// A pattern in objectBoundingBox units follows the country's outline at every
-// zoom with no work per frame - but its coordinate space is squashed to the
-// shape's bounding box, so an image drawn at width 1, height 1 comes out
-// stretched. The sizing below undoes that squash, and then fits the WHOLE note
-// inside the country's box rather than blowing it up until it covers the box.
+// ---------- where the photo sits ----------
+// The pattern was measured in objectBoundingBox units - fractions of the
+// path's own bounding box - which looks right until you zoom in. Leaflet CLIPS
+// a polygon to the visible area, so once part of a country is off screen its
+// path's bounding box is the visible piece, not the country, and the photo
+// slid to a different part of the note at every zoom.
 //
-// Covering was the first attempt and it defeated the point of the feature: a
-// note is about twice as wide as it is tall, most countries are not, and
-// covering Brazil with a 2:1 note means enlarging it three times over until
-// all that is left on screen is a patch of its middle. Fitting shows the note.
-// The country keeps its colour around it, so nothing is left blank.
-export function fitBox(noteAspect, boxAspect) {
-    const r = noteAspect / (boxAspect || 1);
-    const w = r <= 1 ? r : 1;
-    const h = r <= 1 ? 1 : 1 / r;
-    return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+// The box is now measured from the country's real, unclipped bounds, in the
+// map's own pixel space, and re-measured whenever the map moves. Clipping the
+// path no longer moves anything.
+export function layerBox(a, b) {
+    return {
+        x: Math.min(a.x, b.x),
+        y: Math.min(a.y, b.y),
+        w: Math.abs(b.x - a.x),
+        h: Math.abs(b.y - a.y),
+    };
 }
 
-function boundsAspect(layers) {
+function countryBounds(layers) {
     let bounds = null;
     layers.forEach(layer => {
         if (!layer.getBounds) return;
         const b = layer.getBounds();
         bounds = bounds ? bounds.extend(b) : L.latLngBounds(b.getSouthWest(), b.getNorthEast());
     });
-    if (!bounds) return 1;
-    const w = Math.abs(bounds.getEast() - bounds.getWest());
-    const h = Math.abs(bounds.getNorth() - bounds.getSouth());
-    return (h > 0 ? w / h : 1) || 1;
+    return bounds;
+}
+
+function applyPatternBox(entry) {
+    if (!leafletMap || !entry || !entry.bounds) return;
+    const box = layerBox(
+        leafletMap.latLngToLayerPoint(entry.bounds.getNorthWest()),
+        leafletMap.latLngToLayerPoint(entry.bounds.getSouthEast()));
+    if (!(box.w > 0 && box.h > 0)) return;
+    entry.pattern.setAttribute('x', String(box.x));
+    entry.pattern.setAttribute('y', String(box.y));
+    entry.pattern.setAttribute('width', String(box.w));
+    entry.pattern.setAttribute('height', String(box.h));
+    entry.image.setAttribute('width', String(box.w));
+    entry.image.setAttribute('height', String(box.h));
+}
+
+// Leaflet transforms the whole pane during an animated zoom, so the photo
+// travels with its country; when the animation ends the renderer re-lays the
+// paths out in fresh pixel coordinates, and the pattern has to follow.
+function repositionFills() {
+    patterns.forEach(applyPatternBox);
 }
 
 async function addFill(code, imageId, layers) {
@@ -496,26 +519,29 @@ async function addFill(code, imageId, layers) {
     const defs = ensureDefs();
     if (!defs) return;
     const side = await frontSideOf(imageId, url);
-    const box = fitBox(side.aspect, boundsAspect(layers));
     if (drawnFills.get(code) !== imageId) return;
+    const bounds = countryBounds(layers);
+    if (!bounds) return;
 
     const NS = 'http://www.w3.org/2000/svg';
     const pattern = document.createElementNS(NS, 'pattern');
     pattern.setAttribute('id', PATTERN_ID(code));
-    pattern.setAttribute('patternUnits', 'objectBoundingBox');
-    pattern.setAttribute('patternContentUnits', 'objectBoundingBox');
-    pattern.setAttribute('width', '1');
-    pattern.setAttribute('height', '1');
+    pattern.setAttribute('patternUnits', 'userSpaceOnUse');
     const image = document.createElementNS(NS, 'image');
     image.setAttribute('href', side.href);
     image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', side.href); // older WebKit
-    image.setAttribute('x', String(box.x));
-    image.setAttribute('y', String(box.y));
-    image.setAttribute('width', String(box.w));
-    image.setAttribute('height', String(box.h));
-    image.setAttribute('preserveAspectRatio', 'none'); // the sizing above is the fit
+    image.setAttribute('x', '0');
+    image.setAttribute('y', '0');
+    // The note COVERS the country rather than sitting inside it: it is scaled
+    // until no part of the country is left bare, and the country's outline
+    // crops what hangs over. In real pixel space the browser can do this
+    // itself, correctly, which is what "slice" means.
+    image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
     pattern.appendChild(image);
     defs.appendChild(pattern);
+    const entry = { pattern, image, bounds };
+    patterns.set(code, entry);
+    applyPatternBox(entry);
 
     layers.forEach(layer => {
         if (!layer.getLatLngs) return;
@@ -538,6 +564,7 @@ async function addFill(code, imageId, layers) {
 
 function clearFills() {
     drawnFills.clear();
+    patterns.clear();
     if (fillGroup) fillGroup.clearLayers();
     if (fillDefs) fillDefs.innerHTML = '';
     releaseMapFillUrls();
@@ -577,6 +604,7 @@ export function refreshNoteFills() {
     if (fillGroup) fillGroup.clearLayers();
     if (fillDefs) fillDefs.innerHTML = '';
     drawnFills.clear();
+    patterns.clear();
     wanted.forEach((w, code) => {
         drawnFills.set(code, w.imageId);
         addFill(code, w.imageId, w.layers).catch(err => console.warn('Could not fill', code, err));

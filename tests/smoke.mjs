@@ -1645,39 +1645,31 @@ check('a Hebrew device locale does not leak into the date', (() => {
 
 console.log('\nA photo of your own as a country\'s fill');
 {
-    // --- the note keeps its own proportions inside the country's shape ---
-    // An SVG pattern in objectBoundingBox units lives in a space squashed to
-    // the shape's bounding box. Drawing the note at 1x1 there is the easy thing
-    // to do and it stretches every note into the shape of its country.
-    const square = map.fitBox(1, 1);
-    check('a square note in a square country fills it exactly',
-        square.w === 1 && square.h === 1 && square.x === 0 && square.y === 0,
-        JSON.stringify(square));
+    // --- the photo is measured in the MAP's pixels, not the path's box ---
+    // It used to be measured in fractions of the drawn path's bounding box.
+    // Leaflet clips a polygon to the visible area, so as soon as part of a
+    // country went off screen its box shrank and the photo slid to a different
+    // part of the note - "playing with the zoom changes what is shown".
+    const box = map.layerBox({ x: 40, y: 10 }, { x: 140, y: 90 });
+    check('the box spans the two corners of the country',
+        box.x === 40 && box.y === 10 && box.w === 100 && box.h === 80,
+        JSON.stringify(box));
+    const flipped = map.layerBox({ x: 140, y: 90 }, { x: 40, y: 10 });
+    check('and it does not care which corner came first',
+        JSON.stringify(flipped) === JSON.stringify(box), JSON.stringify(flipped));
 
-    // A 2:1 note in a country twice as tall as it is wide. Covering that box
-    // would enlarge the note four times over and leave a patch of its middle
-    // on screen, which is what shipped in 2.29 and hid every note.
-    const tall = map.fitBox(2, 0.5);
-    check('a wide note in a tall country is shown WHOLE, not enlarged to cover',
-        tall.w === 1 && tall.h === 0.25, JSON.stringify(tall));
-    check('and it is centred, so the country wears it in the middle',
-        tall.x === 0 && tall.y === 0.375, JSON.stringify(tall));
-
-    const wide = map.fitBox(0.5, 2);
-    check('a tall note in a wide country is fitted the same way',
-        wide.w === 0.25 && wide.h === 1 && wide.x === 0.375, JSON.stringify(wide));
-
-    [[2.13, 0.76], [1.6, 0.3], [0.4, 3.2], [2.5, 2.5], [1, 9]].forEach(([note, box]) => {
-        const b = map.fitBox(note, box);
-        check(`the whole note is inside the country's box (note ${note} in box ${box})`,
-            b.w <= 1 + 1e-9 && b.h <= 1 + 1e-9 &&
-            (Math.abs(b.w - 1) < 1e-9 || Math.abs(b.h - 1) < 1e-9),
-            JSON.stringify(b));
-        // The point of all of it: no note is ever distorted. A circle printed
-        // on a note has to come out a circle on the map.
-        check(`and it keeps its own shape (note ${note} in box ${box})`,
-            Math.abs((b.w * box) / b.h - note) < 1e-9, JSON.stringify(b));
-    });
+    const mapjs3 = (await import('node:fs')).readFileSync('./js/map.js', 'utf8');
+    check('the pattern is placed in the map\'s own pixels',
+        /patternUnits', 'userSpaceOnUse'/.test(mapjs3) &&
+        !/patternUnits', 'objectBoundingBox/.test(mapjs3),
+        'objectBoundingBox follows the CLIPPED path and moves with the zoom');
+    check('it is measured from the country, not from the path that was drawn',
+        /leafletMap\.latLngToLayerPoint\(entry\.bounds\.getNorthWest\(\)\)/.test(mapjs3));
+    check('and put back in place whenever the map moves',
+        /leafletMap\.on\('zoomend viewreset moveend', repositionFills\)/.test(mapjs3));
+    check('the note covers the country rather than sitting inside it',
+        /preserveAspectRatio', 'xMidYMid slice'/.test(mapjs3),
+        'it was fitted inside the bounding box and left the country half bare');
 
     // --- the choice is stored with the country and saved ---
     const layouts = await import('./js/layouts.js');
