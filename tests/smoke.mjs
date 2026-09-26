@@ -1671,6 +1671,62 @@ console.log('\nA photo of your own as a country\'s fill');
         /preserveAspectRatio', 'xMidYMid slice'/.test(mapjs3),
         'it was fitted inside the bounding box and left the country half bare');
 
+    // --- a country is not one shape ---
+    // France reaches the Indian Ocean and the United States reaches Guam. One
+    // box around all of that is mostly sea, and the note was stretched across
+    // the whole span, so the mainland wore a sliver of it. Each landmass now
+    // wears its own copy - and the specks are left alone, because a copy of a
+    // banknote four pixels across is a pattern and a path spent on nothing.
+    const fakeBounds = (w, h) => ({
+        getWest: () => 0, getEast: () => w, getSouth: () => 0, getNorth: () => h,
+    });
+    const piece = (w, h) => ({ bounds: fakeBounds(w, h), tag: `${w}x${h}` });
+    const kept = map.worthFilling([
+        piece(100, 80),   // the mainland
+        piece(40, 25),    // a real outlying territory
+        piece(3, 2),      // a rock
+        piece(1, 1),      // a sandbar
+    ]).map(p => p.tag);
+    check('the mainland and a real territory each get their own note',
+        kept.includes('100x80') && kept.includes('40x25'), JSON.stringify(kept));
+    check('and the specks are left with the plain colour',
+        !kept.includes('3x2') && !kept.includes('1x1'), JSON.stringify(kept));
+    const mapjs6 = (await import('node:fs')).readFileSync('./js/map.js', 'utf8');
+    check('a multi-part country is split into its landmasses before it is filled',
+        /function landmassesOf\(layer\)/.test(mapjs6) &&
+        /!L\.LineUtil\.isFlat\(latlngs\[0\]\)\) return latlngs;/.test(mapjs6),
+        'one box around the mainland AND the islands is mostly sea');
+    check('and each landmass gets a pattern of its own',
+        /const id = `\$\{PATTERN_ID\(code\)\}-\$\{n\+\+\}`;/.test(mapjs6) &&
+        /worthFilling\(pieces\)\.forEach/.test(mapjs6));
+
+    check('a country of one shape keeps that shape',
+        map.worthFilling([piece(10, 10)]).length === 1);
+    check('and nothing at all is not an error',
+        map.worthFilling([]).length === 0);
+
+    // --- a big country gets a better photo, and only then ---
+    // The fills are built from the 320px thumbnail already on the device. That
+    // is right for a country an inch wide and visibly coarse for Russia drawn
+    // a thousand pixels across.
+    const mapjs5 = (await import('node:fs')).readFileSync('./js/map.js', 'utf8');
+    check('the photo is only fetched at full size once something is drawn bigger than the thumbnail',
+        /Math\.max\(box\.w, box\.h\) <= SHARPEN_ABOVE_PX\) return;/.test(mapjs5) &&
+        /const SHARPEN_ABOVE_PX = 3\d\d;/.test(mapjs5),
+        'every photo would be downloaded at full size on opening the map');
+    check('and fetched once per photo, however many landmasses wear it',
+        /if \(sharpPending\.has\(id\) \|\| state\.offline \|\| !state\.online\) return;/.test(mapjs5) &&
+        /sharpPending\.add\(id\);/.test(mapjs5));
+    check('the better photo is shrunk to something a screen can show',
+        /const SHARP_MAX_PX = 1500;/.test(mapjs5) && /cutFrontFace\(img, SHARP_MAX_PX\)/.test(mapjs5));
+    check('and it is cut to one face like the thumbnail was',
+        /async function cutFrontFace\(img, maxPx\)/.test(mapjs5) &&
+        /frontSideRect\(ctx\.getImageData/.test(mapjs5));
+    check('the photos it builds are object URLs, and every one is released',
+        /fillUrls\.add\(url\)/.test(mapjs5) &&
+        /fillUrls\.forEach\(url => URL\.revokeObjectURL\(url\)\)/.test(mapjs5),
+        'a 1500px JPEG as a data: URL is half a megabyte of text per country');
+
     // --- the choice is stored with the country and saved ---
     const layouts = await import('./js/layouts.js');
     state.state.currentCollectionId = 'col-bg';
@@ -1790,8 +1846,16 @@ console.log('\nA photo of your own as a country\'s fill');
 
     // --- in the photo map, countries you have nothing from lose their colour ---
     check('a country you own nothing from is left uncoloured in the photo map',
-        /const painted = show && !\(state\.noteFills && !owned\);/.test(mapjs4),
+        /const painted = show && !\(state\.noteFills && !owned\) && !hasNoteFill\(code, owned\);/
+            .test(mapjs4),
         'the "none yet" red would otherwise cover most of the photo map');
+    // The photo covers a country's real landmasses; its specks are too small
+    // to carry one and were left showing the green underneath, so a country
+    // wearing a photo read as a photo plus a scatter of green dots.
+    check('and a country wearing a photo is not painted under it either',
+        /export function hasNoteFill\(code, owned\)/.test(mapjs4) &&
+        /return !!imageId && isShownItem\(code, imageId\);/.test(mapjs4),
+        'the islands too small for a note kept the country colour');
     check('and switching the photo map on is itself an animated change',
         /if \(painted\) state\.shownCodes\.add\(code\)/.test(mapjs4) &&
         (() => {

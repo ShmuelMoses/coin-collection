@@ -13,7 +13,7 @@ import { canonicalCode, filterEntry } from './countries.js';
 import { openModal } from './modal.js';
 import { countryRowEls } from './list.js';
 import { getCountryBackgroundId } from './layouts.js';
-import { mapFillThumbUrl, releaseMapFillUrls } from './cache.js';
+import { mapFillThumbUrl, releaseMapFillUrls, getFullImageBlobUrl } from './cache.js';
 
 // Decorative antique-map compass rose. Added with L.svgOverlay bound to a real
 // lat/lng box rather than a fixed-pixel marker, so it scales with the map
@@ -174,7 +174,12 @@ export function applyFilters(opts) {
         // photos and a map of red countries competes with them. shownCodes
         // tracks the paint, so turning the photo map on or off is itself a
         // change, and fades like every other change.
-        const painted = show && !(state.noteFills && !owned);
+        // A country wearing a photo is not painted underneath it at all. The
+        // photo covers its real landmasses; what is left over is the specks
+        // too small to carry a note, and those should read as empty map like
+        // any other country with nothing on it - not as a scatter of green
+        // dots around a country that is already coloured by its photo.
+        const painted = show && !(state.noteFills && !owned) && !hasNoteFill(code, owned);
         if (animate) {
             if (wasShown !== painted || wasOwned !== owned) {
                 changes.push({
@@ -294,9 +299,10 @@ let fillDefs = null;
 // code -> the image id it is currently drawn with, so a refresh that changes
 // nothing does nothing.
 const drawnFills = new Map();
-// code -> { pattern, image, bounds }, so every photo can be put back in place
-// when the map moves.
-const patterns = new Map();
+// One entry per LANDMASS on screen - { pattern, image, bounds, imageId, href } -
+// so every photo can be put back in place when the map moves. A list, not a map
+// by country: France alone is a mainland and a few dozen islands.
+const patterns = [];
 
 const PATTERN_ID = code => 'notefill-' + code;
 
@@ -431,33 +437,112 @@ export function frontSideRect(img) {
 
 // Cut once per photo and remembered: the same note can fill a country through
 // many repaints, and reading a canvas back is the one expensive step here.
-const sideCache = new Map();
+const sideCache = new Map();     // imageId -> href of the front face, thumbnail-sized
+const sharpCache = new Map();    // imageId -> href of the same face at full quality
+const sharpPending = new Set();
+// Every URL this module has minted, so none is leaked when the fills are torn
+// down. Object URLs, not data: URLs - a 1400px JPEG as base64 would sit in the
+// DOM as half a megabyte of text per country.
+const fillUrls = new Set();
+
+function canvasUrl(canvas) {
+    return new Promise(resolve => {
+        canvas.toBlob(blob => {
+            if (!blob) { resolve(null); return; }
+            const url = URL.createObjectURL(blob);
+            fillUrls.add(url);
+            resolve(url);
+        }, 'image/jpeg', 0.9);
+    });
+}
+
+// Cuts the front face out of one loaded image, optionally shrinking it so no
+// country has to carry more pixels than it can show.
+async function cutFrontFace(img, maxPx) {
+    const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    let rect = { x: 0, y: 0, w, h };
+    try {
+        rect = frontSideRect(ctx.getImageData(0, 0, w, h));
+    } catch (err) {
+        console.warn('Could not read the photo back to find its faces', err);
+    }
+    if (!(rect.w >= 2 && rect.h >= 2)) rect = { x: 0, y: 0, w, h };
+
+    const scale = maxPx ? Math.min(1, maxPx / Math.max(rect.w, rect.h)) : 1;
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(rect.w * scale));
+    out.height = Math.max(1, Math.round(rect.h * scale));
+    const octx = out.getContext('2d');
+    octx.imageSmoothingQuality = 'high';
+    octx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, out.width, out.height);
+    return canvasUrl(out);
+}
 
 async function frontSideOf(imageId, url) {
     if (sideCache.has(imageId)) return sideCache.get(imageId);
-    let result = { href: url, aspect: 1 };
+    let href = url;
     try {
-        const img = await loadImage(url);
-        const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
-        result = { href: url, aspect: w / h };
-        const canvas = document.createElement('canvas');
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(img, 0, 0);
-        const rect = frontSideRect(ctx.getImageData(0, 0, w, h));
-        if (rect.w >= 2 && rect.h >= 2 && (rect.w !== w || rect.h !== h)) {
-            const out = document.createElement('canvas');
-            out.width = rect.w; out.height = rect.h;
-            out.getContext('2d').drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
-            result = { href: out.toDataURL('image/jpeg', 0.88), aspect: rect.w / rect.h };
-        }
+        const cut = await cutFrontFace(await loadImage(url), 0);
+        if (cut) href = cut;
     } catch (err) {
         // A photo that cannot be read back is shown whole rather than not at
         // all - both faces in a country beats an empty country.
         console.warn('Could not cut one side out of', imageId, err);
     }
-    sideCache.set(imageId, result);
-    return result;
+    sideCache.set(imageId, href);
+    return href;
+}
+
+// ---------- a sharper photo once a country is drawn big ----------
+// The fills are built from the 320px thumbnail, which is all any country needs
+// at world zoom and is already on the device. Russia drawn a thousand pixels
+// wide is a different matter, and at that size the thumbnail is visibly coarse.
+//
+// So the better photo is fetched only when something is actually drawn larger
+// than the thumbnail, and only once per photo. At world zoom nothing triggers
+// it; zoom into one country and that country sharpens.
+const SHARPEN_ABOVE_PX = 330;
+const SHARP_MAX_PX = 1500;
+
+function useHref(entry, href) {
+    entry.image.setAttribute('href', href);
+    entry.image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href);
+}
+
+function sharpenIfBig(entry, box) {
+    const id = entry.imageId;
+    if (Math.max(box.w, box.h) <= SHARPEN_ABOVE_PX) return;
+    if (sharpCache.has(id)) {
+        if (entry.href !== sharpCache.get(id)) {
+            entry.href = sharpCache.get(id);
+            useHref(entry, entry.href);
+        }
+        return;
+    }
+    if (sharpPending.has(id) || state.offline || !state.online) return;
+    sharpPending.add(id);
+    getFullImageBlobUrl(id)
+        .then(async fullUrl => {
+            try {
+                const img = await loadImage(fullUrl);
+                const href = await cutFrontFace(img, SHARP_MAX_PX);
+                if (href) {
+                    sharpCache.set(id, href);
+                    // Every landmass wearing this photo gets the better one.
+                    patterns.forEach(e => {
+                        if (e.imageId === id) { e.href = href; useHref(e, href); }
+                    });
+                }
+            } finally {
+                URL.revokeObjectURL(fullUrl);
+            }
+        })
+        .catch(err => console.warn('Could not sharpen the photo for', id, err))
+        .finally(() => sharpPending.delete(id));
 }
 
 // ---------- where the photo sits ----------
@@ -467,7 +552,7 @@ async function frontSideOf(imageId, url) {
 // path's bounding box is the visible piece, not the country, and the photo
 // slid to a different part of the note at every zoom.
 //
-// The box is now measured from the country's real, unclipped bounds, in the
+// The box is now measured from the landmass's real, unclipped bounds, in the
 // map's own pixel space, and re-measured whenever the map moves. Clipping the
 // path no longer moves anything.
 export function layerBox(a, b) {
@@ -479,14 +564,40 @@ export function layerBox(a, b) {
     };
 }
 
-function countryBounds(layers) {
-    let bounds = null;
-    layers.forEach(layer => {
-        if (!layer.getBounds) return;
-        const b = layer.getBounds();
-        bounds = bounds ? bounds.extend(b) : L.latLngBounds(b.getSouthWest(), b.getNorthEast());
-    });
-    return bounds;
+// One country is not one shape. France reaches from the Atlantic to the Indian
+// Ocean and the United States from Guam to Maine, and a single box around all
+// of that is mostly empty sea: the note was stretched across the whole span,
+// so the mainland wore a thin slice of it and every island wore another slice.
+//
+// Each separate landmass is given its own copy of the note instead, sized to
+// itself. The mainland gets a note at the mainland's size, and an island gets
+// one at the island's size.
+function landmassesOf(layer) {
+    if (!layer || !layer.getLatLngs) return [];
+    const latlngs = layer.getLatLngs();
+    if (!latlngs || !latlngs.length) return [];
+    // [ [ring, hole...], [ring, hole...] ] is a multi-part country;
+    // [ ring, hole... ] is a single one.
+    if (L.LineUtil && L.LineUtil.isFlat && !L.LineUtil.isFlat(latlngs[0])) return latlngs;
+    return [latlngs];
+}
+
+// A country's specks - sandbars, rocks, a harbour island - are landmasses too,
+// and giving each of them its own copy of the note costs a pattern and a path
+// for something a few pixels across. Indonesia alone has 125 of them. Anything
+// this much smaller than the country's largest piece keeps the plain colour
+// instead, which at that size is all it can show anyway.
+const MIN_LANDMASS_SHARE = 0.004;
+
+function boundsArea(b) {
+    return Math.abs(b.getEast() - b.getWest()) * Math.abs(b.getNorth() - b.getSouth());
+}
+
+export function worthFilling(pieces) {
+    if (!pieces.length) return pieces;
+    const largest = pieces.reduce((m, p) => Math.max(m, boundsArea(p.bounds)), 0);
+    if (!(largest > 0)) return pieces;
+    return pieces.filter(p => boundsArea(p.bounds) >= largest * MIN_LANDMASS_SHARE);
 }
 
 function applyPatternBox(entry) {
@@ -501,6 +612,7 @@ function applyPatternBox(entry) {
     entry.pattern.setAttribute('height', String(box.h));
     entry.image.setAttribute('width', String(box.w));
     entry.image.setAttribute('height', String(box.h));
+    sharpenIfBig(entry, box);
 }
 
 // Leaflet transforms the whole pane during an animated zoom, so the photo
@@ -514,60 +626,82 @@ async function addFill(code, imageId, layers) {
     const url = await mapFillThumbUrl(imageId);
     // The country may have been switched off, or a different photo chosen,
     // while the thumbnail was being read.
-    if (drawnFills.get(code) !== imageId || !fillGroup) { return; }
+    if (drawnFills.get(code) !== imageId || !fillGroup) return;
 
     const defs = ensureDefs();
     if (!defs) return;
-    const side = await frontSideOf(imageId, url);
+    const href = sharpCache.get(imageId) || await frontSideOf(imageId, url);
     if (drawnFills.get(code) !== imageId) return;
-    const bounds = countryBounds(layers);
-    if (!bounds) return;
 
     const NS = 'http://www.w3.org/2000/svg';
-    const pattern = document.createElementNS(NS, 'pattern');
-    pattern.setAttribute('id', PATTERN_ID(code));
-    pattern.setAttribute('patternUnits', 'userSpaceOnUse');
-    const image = document.createElementNS(NS, 'image');
-    image.setAttribute('href', side.href);
-    image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', side.href); // older WebKit
-    image.setAttribute('x', '0');
-    image.setAttribute('y', '0');
-    // The note COVERS the country rather than sitting inside it: it is scaled
-    // until no part of the country is left bare, and the country's outline
-    // crops what hangs over. In real pixel space the browser can do this
-    // itself, correctly, which is what "slice" means.
-    image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-    pattern.appendChild(image);
-    defs.appendChild(pattern);
-    const entry = { pattern, image, bounds };
-    patterns.set(code, entry);
-    applyPatternBox(entry);
-
+    const pieces = [];
     layers.forEach(layer => {
-        if (!layer.getLatLngs) return;
-        L.polygon(layer.getLatLngs(), {
-            renderer: fillRenderer,
-            pane: 'noteFills',
-            interactive: false,
-            // Exactly the border every other country is drawn with, so a
-            // filled country does not sit on the map in a heavier outline
-            // than its neighbours - a photo already sets it apart.
-            color: COUNTRY_BORDER.color,
-            weight: COUNTRY_BORDER.weight,
-            opacity: 1,
-            fillColor: `url(#${PATTERN_ID(code)})`,
-            fillOpacity: 1,
-            className: 'note-fill',
-        }).addTo(fillGroup);
+        landmassesOf(layer).forEach(rings => {
+            const shape = L.polygon(rings, { renderer: fillRenderer, pane: 'noteFills' });
+            const bounds = shape.getBounds();
+            if (!bounds || !bounds.isValid || !bounds.isValid()) return;
+            pieces.push({ shape, bounds });
+        });
+    });
+
+    let n = 0;
+    worthFilling(pieces).forEach(({ shape, bounds }) => {
+            const id = `${PATTERN_ID(code)}-${n++}`;
+            const pattern = document.createElementNS(NS, 'pattern');
+            pattern.setAttribute('id', id);
+            pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+            const image = document.createElementNS(NS, 'image');
+            image.setAttribute('x', '0');
+            image.setAttribute('y', '0');
+            // The note COVERS its landmass rather than sitting inside it: it is
+            // scaled until nothing is left bare, and the coastline crops what
+            // hangs over. In real pixel space the browser does this itself.
+            image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+            pattern.appendChild(image);
+            defs.appendChild(pattern);
+
+            const entry = { pattern, image, bounds, imageId, href };
+            useHref(entry, href);
+            patterns.push(entry);
+            applyPatternBox(entry);
+
+            shape.setStyle({
+                interactive: false,
+                // Exactly the border every other country is drawn with, so a
+                // filled country does not sit on the map in a heavier outline
+                // than its neighbours - a photo already sets it apart.
+                color: COUNTRY_BORDER.color,
+                weight: COUNTRY_BORDER.weight,
+                opacity: 1,
+                fillColor: `url(#${id})`,
+                fillOpacity: 1,
+            });
+            shape.options.interactive = false;
+            if (shape._path) shape._path.setAttribute('class',
+                (shape._path.getAttribute('class') || '') + ' note-fill');
+            shape.addTo(fillGroup);
     });
 }
 
 function clearFills() {
     drawnFills.clear();
-    patterns.clear();
+    patterns.length = 0;
+    // The cut-out faces belong to the fills; the caches are dropped with them
+    // so a later photo map is built from whatever is on the device then.
+    fillUrls.forEach(url => URL.revokeObjectURL(url));
+    fillUrls.clear();
+    sideCache.clear();
+    sharpCache.clear();
     if (fillGroup) fillGroup.clearLayers();
     if (fillDefs) fillDefs.innerHTML = '';
     releaseMapFillUrls();
+}
+
+// True when this country's photo is (or is about to be) drawn on the map.
+export function hasNoteFill(code, owned) {
+    if (!state.noteFills || !owned) return false;
+    const imageId = getCountryBackgroundId(code);
+    return !!imageId && isShownItem(code, imageId);
 }
 
 function isShownItem(code, imageId) {
@@ -604,7 +738,7 @@ export function refreshNoteFills() {
     if (fillGroup) fillGroup.clearLayers();
     if (fillDefs) fillDefs.innerHTML = '';
     drawnFills.clear();
-    patterns.clear();
+    patterns.length = 0;
     wanted.forEach((w, code) => {
         drawnFills.set(code, w.imageId);
         addFill(code, w.imageId, w.layers).catch(err => console.warn('Could not fill', code, err));
