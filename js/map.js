@@ -13,7 +13,7 @@ import { canonicalCode, filterEntry } from './countries.js';
 import { openModal } from './modal.js';
 import { countryRowEls } from './list.js';
 import { getCountryBackgroundId } from './layouts.js';
-import { mapFillThumbUrl, releaseMapFillUrls, getFullImageBlobUrl } from './cache.js';
+import { mapFillThumbUrl, releaseMapFillUrls, fetchFullImageBlob } from './cache.js';
 
 // Decorative antique-map compass rose. Added with L.svgOverlay bound to a real
 // lat/lng box rather than a fixed-pixel marker, so it scales with the map
@@ -440,8 +440,13 @@ export function frontSideRect(img) {
 const sideCache = new Map();     // imageId -> href of the front face, thumbnail-sized
 const sharpCache = new Map();    // imageId -> href of the same face at full quality
 const sharpPending = new Set();
+// Where the front face sits in the photo, as FRACTIONS of it. Found once on
+// the 320px thumbnail and reused on the full-size photo: the faces are in the
+// same place in both, and scanning twelve million pixels of a phone photo to
+// rediscover that is what made zooming stutter.
+const faceRects = new Map();     // imageId -> { fx, fy, fw, fh }
 // Every URL this module has minted, so none is leaked when the fills are torn
-// down. Object URLs, not data: URLs - a 1400px JPEG as base64 would sit in the
+// down. Object URLs, not data: URLs - a 1200px JPEG as base64 would sit in the
 // DOM as half a megabyte of text per country.
 const fillUrls = new Set();
 
@@ -456,38 +461,27 @@ function canvasUrl(canvas) {
     });
 }
 
-// Cuts the front face out of one loaded image, optionally shrinking it so no
-// country has to carry more pixels than it can show.
-async function cutFrontFace(img, maxPx) {
-    const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
-    const canvas = document.createElement('canvas');
-    canvas.width = w; canvas.height = h;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0);
-    let rect = { x: 0, y: 0, w, h };
-    try {
-        rect = frontSideRect(ctx.getImageData(0, 0, w, h));
-    } catch (err) {
-        console.warn('Could not read the photo back to find its faces', err);
-    }
-    if (!(rect.w >= 2 && rect.h >= 2)) rect = { x: 0, y: 0, w, h };
-
-    const scale = maxPx ? Math.min(1, maxPx / Math.max(rect.w, rect.h)) : 1;
-    const out = document.createElement('canvas');
-    out.width = Math.max(1, Math.round(rect.w * scale));
-    out.height = Math.max(1, Math.round(rect.h * scale));
-    const octx = out.getContext('2d');
-    octx.imageSmoothingQuality = 'high';
-    octx.drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, out.width, out.height);
-    return canvasUrl(out);
-}
-
+// ---------- the thumbnail: found by looking at the pixels ----------
 async function frontSideOf(imageId, url) {
     if (sideCache.has(imageId)) return sideCache.get(imageId);
     let href = url;
     try {
-        const cut = await cutFrontFace(await loadImage(url), 0);
-        if (cut) href = cut;
+        const img = await loadImage(url);
+        const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0);
+        let rect = frontSideRect(ctx.getImageData(0, 0, w, h));
+        if (!(rect.w >= 2 && rect.h >= 2)) rect = { x: 0, y: 0, w, h };
+        faceRects.set(imageId, { fx: rect.x / w, fy: rect.y / h, fw: rect.w / w, fh: rect.h / h });
+        if (rect.w !== w || rect.h !== h) {
+            const out = document.createElement('canvas');
+            out.width = rect.w; out.height = rect.h;
+            out.getContext('2d').drawImage(img, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+            const cut = await canvasUrl(out);
+            if (cut) href = cut;
+        }
     } catch (err) {
         // A photo that cannot be read back is shown whole rather than not at
         // all - both faces in a country beats an empty country.
@@ -502,47 +496,84 @@ async function frontSideOf(imageId, url) {
 // at world zoom and is already on the device. Russia drawn a thousand pixels
 // wide is a different matter, and at that size the thumbnail is visibly coarse.
 //
-// So the better photo is fetched only when something is actually drawn larger
-// than the thumbnail, and only once per photo. At world zoom nothing triggers
-// it; zoom into one country and that country sharpens.
+// The better photo is fetched only when something is actually drawn larger
+// than the thumbnail, once per photo, and only while the map is STILL: doing
+// it during a zoom is what made the photo map stutter. Nothing here scans
+// pixels - the face was already located on the thumbnail - and the decoding
+// and shrinking are handed to createImageBitmap, which does both off the main
+// thread, so the map keeps moving while it happens.
 const SHARPEN_ABOVE_PX = 330;
-const SHARP_MAX_PX = 1500;
+const SHARP_MAX_PX = 1200;
+const SHARPEN_IDLE_MS = 400;
 
 function useHref(entry, href) {
+    entry.href = href;
     entry.image.setAttribute('href', href);
     entry.image.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href);
 }
 
-function sharpenIfBig(entry, box) {
-    const id = entry.imageId;
-    if (Math.max(box.w, box.h) <= SHARPEN_ABOVE_PX) return;
-    if (sharpCache.has(id)) {
-        if (entry.href !== sharpCache.get(id)) {
-            entry.href = sharpCache.get(id);
-            useHref(entry, entry.href);
+async function sharpImage(imageId) {
+    const frac = faceRects.get(imageId) || { fx: 0, fy: 0, fw: 1, fh: 1 };
+    const blob = await fetchFullImageBlob(imageId);
+    const full = await createImageBitmap(blob);
+    try {
+        const sx = Math.max(0, Math.round(frac.fx * full.width));
+        const sy = Math.max(0, Math.round(frac.fy * full.height));
+        const sw = Math.max(1, Math.min(full.width - sx, Math.round(frac.fw * full.width)));
+        const sh = Math.max(1, Math.min(full.height - sy, Math.round(frac.fh * full.height)));
+        const scale = Math.min(1, SHARP_MAX_PX / Math.max(sw, sh));
+        const dw = Math.max(1, Math.round(sw * scale));
+        const dh = Math.max(1, Math.round(sh * scale));
+        // Crop and shrink in one step, off the main thread.
+        const piece = await createImageBitmap(full, sx, sy, sw, sh,
+            { resizeWidth: dw, resizeHeight: dh, resizeQuality: 'high' });
+        try {
+            const canvas = document.createElement('canvas');
+            canvas.width = dw; canvas.height = dh;
+            canvas.getContext('2d').drawImage(piece, 0, 0);
+            return await canvasUrl(canvas);
+        } finally {
+            if (piece.close) piece.close();
         }
+    } finally {
+        if (full.close) full.close();
+    }
+}
+
+function sharpenOne(entry) {
+    const id = entry.imageId;
+    if (sharpCache.has(id)) {
+        if (entry.href !== sharpCache.get(id)) useHref(entry, sharpCache.get(id));
         return;
     }
     if (sharpPending.has(id) || state.offline || !state.online) return;
+    if (typeof createImageBitmap !== 'function') return;
     sharpPending.add(id);
-    getFullImageBlobUrl(id)
-        .then(async fullUrl => {
-            try {
-                const img = await loadImage(fullUrl);
-                const href = await cutFrontFace(img, SHARP_MAX_PX);
-                if (href) {
-                    sharpCache.set(id, href);
-                    // Every landmass wearing this photo gets the better one.
-                    patterns.forEach(e => {
-                        if (e.imageId === id) { e.href = href; useHref(e, href); }
-                    });
-                }
-            } finally {
-                URL.revokeObjectURL(fullUrl);
-            }
+    sharpImage(id)
+        .then(href => {
+            if (!href) return;
+            sharpCache.set(id, href);
+            // Every landmass wearing this photo gets the better one.
+            patterns.forEach(e => { if (e.imageId === id) useHref(e, href); });
         })
         .catch(err => console.warn('Could not sharpen the photo for', id, err))
         .finally(() => sharpPending.delete(id));
+}
+
+// Zooming fires this over and over; only the last one, once the map has been
+// still for a moment, does any work.
+let sharpenTimer = null;
+function scheduleSharpen() {
+    if (sharpenTimer) clearTimeout(sharpenTimer);
+    sharpenTimer = setTimeout(() => {
+        sharpenTimer = null;
+        if (!state.noteFills || !leafletMap) return;
+        patterns.forEach(entry => {
+            const w = Number(entry.pattern.getAttribute('width'));
+            const h = Number(entry.pattern.getAttribute('height'));
+            if (entry.drawn && Math.max(w, h) > SHARPEN_ABOVE_PX) sharpenOne(entry);
+        });
+    }, SHARPEN_IDLE_MS);
 }
 
 // ---------- where the photo sits ----------
@@ -600,11 +631,20 @@ export function worthFilling(pieces) {
     return pieces.filter(p => boundsArea(p.bounds) >= largest * MIN_LANDMASS_SHARE);
 }
 
+// A landmass smaller than this on screen shows nothing of a note, and every
+// one of them is a shape Leaflet re-projects and re-draws at the end of every
+// zoom. At world zoom that was most of them.
+const MIN_FILL_PX = 12;
+
+function boxFor(bounds) {
+    return layerBox(
+        leafletMap.latLngToLayerPoint(bounds.getNorthWest()),
+        leafletMap.latLngToLayerPoint(bounds.getSouthEast()));
+}
+
 function applyPatternBox(entry) {
     if (!leafletMap || !entry || !entry.bounds) return;
-    const box = layerBox(
-        leafletMap.latLngToLayerPoint(entry.bounds.getNorthWest()),
-        leafletMap.latLngToLayerPoint(entry.bounds.getSouthEast()));
+    const box = boxFor(entry.bounds);
     if (!(box.w > 0 && box.h > 0)) return;
     entry.pattern.setAttribute('x', String(box.x));
     entry.pattern.setAttribute('y', String(box.y));
@@ -612,14 +652,108 @@ function applyPatternBox(entry) {
     entry.pattern.setAttribute('height', String(box.h));
     entry.image.setAttribute('width', String(box.w));
     entry.image.setAttribute('height', String(box.h));
-    sharpenIfBig(entry, box);
 }
 
-// Leaflet transforms the whole pane during an animated zoom, so the photo
-// travels with its country; when the animation ends the renderer re-lays the
-// paths out in fresh pixel coordinates, and the pattern has to follow.
+// ---------- only what is on screen is drawn ----------
+// The fills are a SECOND set of shapes over the canvas map, and Leaflet
+// re-projects every shape it holds each time the view changes - so a hundred
+// and twenty photo shapes were being re-laid-out at the end of every zoom,
+// including all the ones off screen and all the ones too small to see. That,
+// not the photos themselves, was what made zooming in the photo map slow: with
+// every fill merely hidden it was barely faster, and with the shapes gone it
+// matched the plain map.
+//
+// So the shapes are built and thrown away as the view moves. Zoomed in on one
+// country there are one or two of them, which is the case that matters - it is
+// where the photos are actually being looked at.
+const fillTargets = [];          // every landmass that COULD wear a photo
+const liveFills = new Map();     // key -> the shape and pattern actually drawn
+
+// The shape and its pattern are built once and then only attached to, or
+// detached from, the map. Rebuilding them each time cost as much as leaving
+// them attached: turning a country's rings back into Leaflet's own points is
+// most of the work, and it does not change when the view does.
+function hideFill(target) {
+    const entry = target.entry;
+    if (!entry || !entry.attached) return;
+    if (fillGroup) fillGroup.removeLayer(entry.shape);
+    entry.attached = false;
+    const at = patterns.indexOf(entry);
+    if (at !== -1) patterns.splice(at, 1);
+}
+
+function showFill(target) {
+    const entry = target.entry;
+    if (!entry || entry.attached) return;
+    entry.attached = true;
+    patterns.push(entry);
+    applyPatternBox(entry);
+    entry.shape.addTo(fillGroup);
+    if (entry.shape._path) entry.shape._path.setAttribute('class',
+        (entry.shape._path.getAttribute('class') || '') + ' note-fill');
+}
+
+function createFill(target) {
+    const defs = ensureDefs();
+    if (!defs) return;
+    const NS = 'http://www.w3.org/2000/svg';
+    const pattern = document.createElementNS(NS, 'pattern');
+    pattern.setAttribute('id', target.key);
+    pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+    const image = document.createElementNS(NS, 'image');
+    image.setAttribute('x', '0');
+    image.setAttribute('y', '0');
+    // The note COVERS its landmass rather than sitting inside it: it is scaled
+    // until nothing is left bare, and the coastline crops what hangs over. In
+    // real pixel space the browser does this itself.
+    image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+    pattern.appendChild(image);
+    defs.appendChild(pattern);
+
+    const shape = L.polygon(target.rings, {
+        renderer: fillRenderer,
+        pane: 'noteFills',
+        interactive: false,
+        // Exactly the border every other country is drawn with, so a filled
+        // country does not sit on the map in a heavier outline than its
+        // neighbours - a photo already sets it apart.
+        color: COUNTRY_BORDER.color,
+        weight: COUNTRY_BORDER.weight,
+        opacity: 1,
+        fillColor: `url(#${target.key})`,
+        fillOpacity: 1,
+    });
+    shape.options.interactive = false;
+
+    const entry = {
+        pattern, image, bounds: target.bounds, imageId: target.imageId,
+        shape, href: null, attached: false,
+    };
+    useHref(entry, sharpCache.get(target.imageId) || target.href);
+    target.entry = entry;
+    liveFills.set(target.key, entry);
+    showFill(target);
+}
+
+function syncFills() {
+    if (!leafletMap || !fillGroup || !state.noteFills) return;
+    // A margin either side, so a small pan does not have to rebuild anything.
+    const view = leafletMap.getBounds().pad(0.3);
+    fillTargets.forEach(target => {
+        const wanted = view.intersects(target.bounds) &&
+            Math.max(boxFor(target.bounds).w, boxFor(target.bounds).h) >= MIN_FILL_PX;
+        if (!wanted) { hideFill(target); return; }
+        if (!target.entry) createFill(target);
+        else { showFill(target); applyPatternBox(target.entry); }
+    });
+    scheduleSharpen();
+}
+
+// Leaflet transforms the whole pane during an animated zoom, so the photos
+// travel with their countries; when the animation ends the renderer re-lays
+// everything out in fresh pixel coordinates, and the fills follow.
 function repositionFills() {
-    patterns.forEach(applyPatternBox);
+    syncFills();
 }
 
 async function addFill(code, imageId, layers) {
@@ -627,71 +761,39 @@ async function addFill(code, imageId, layers) {
     // The country may have been switched off, or a different photo chosen,
     // while the thumbnail was being read.
     if (drawnFills.get(code) !== imageId || !fillGroup) return;
-
-    const defs = ensureDefs();
-    if (!defs) return;
     const href = sharpCache.get(imageId) || await frontSideOf(imageId, url);
     if (drawnFills.get(code) !== imageId) return;
 
-    const NS = 'http://www.w3.org/2000/svg';
     const pieces = [];
     layers.forEach(layer => {
         landmassesOf(layer).forEach(rings => {
-            const shape = L.polygon(rings, { renderer: fillRenderer, pane: 'noteFills' });
-            const bounds = shape.getBounds();
-            if (!bounds || !bounds.isValid || !bounds.isValid()) return;
-            pieces.push({ shape, bounds });
+            const bounds = L.latLngBounds([]);
+            (L.LineUtil && L.LineUtil.isFlat && L.LineUtil.isFlat(rings) ? [rings] : rings)
+                .forEach(ring => ring.forEach(ll => bounds.extend(ll)));
+            if (!bounds.isValid()) return;
+            pieces.push({ rings, bounds });
         });
     });
 
     let n = 0;
-    worthFilling(pieces).forEach(({ shape, bounds }) => {
-            const id = `${PATTERN_ID(code)}-${n++}`;
-            const pattern = document.createElementNS(NS, 'pattern');
-            pattern.setAttribute('id', id);
-            pattern.setAttribute('patternUnits', 'userSpaceOnUse');
-            const image = document.createElementNS(NS, 'image');
-            image.setAttribute('x', '0');
-            image.setAttribute('y', '0');
-            // The note COVERS its landmass rather than sitting inside it: it is
-            // scaled until nothing is left bare, and the coastline crops what
-            // hangs over. In real pixel space the browser does this itself.
-            image.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-            pattern.appendChild(image);
-            defs.appendChild(pattern);
-
-            const entry = { pattern, image, bounds, imageId, href };
-            useHref(entry, href);
-            patterns.push(entry);
-            applyPatternBox(entry);
-
-            shape.setStyle({
-                interactive: false,
-                // Exactly the border every other country is drawn with, so a
-                // filled country does not sit on the map in a heavier outline
-                // than its neighbours - a photo already sets it apart.
-                color: COUNTRY_BORDER.color,
-                weight: COUNTRY_BORDER.weight,
-                opacity: 1,
-                fillColor: `url(#${id})`,
-                fillOpacity: 1,
-            });
-            shape.options.interactive = false;
-            if (shape._path) shape._path.setAttribute('class',
-                (shape._path.getAttribute('class') || '') + ' note-fill');
-            shape.addTo(fillGroup);
+    worthFilling(pieces).forEach(({ rings, bounds }) => {
+        fillTargets.push({ key: `${PATTERN_ID(code)}-${n++}`, rings, bounds, imageId, href });
     });
+    syncFills();
 }
 
 function clearFills() {
     drawnFills.clear();
     patterns.length = 0;
+    fillTargets.length = 0;
+    liveFills.clear();
     // The cut-out faces belong to the fills; the caches are dropped with them
     // so a later photo map is built from whatever is on the device then.
     fillUrls.forEach(url => URL.revokeObjectURL(url));
     fillUrls.clear();
     sideCache.clear();
     sharpCache.clear();
+    faceRects.clear();
     if (fillGroup) fillGroup.clearLayers();
     if (fillDefs) fillDefs.innerHTML = '';
     releaseMapFillUrls();
@@ -739,6 +841,8 @@ export function refreshNoteFills() {
     if (fillDefs) fillDefs.innerHTML = '';
     drawnFills.clear();
     patterns.length = 0;
+    fillTargets.length = 0;
+    liveFills.clear();
     wanted.forEach((w, code) => {
         drawnFills.set(code, w.imageId);
         addFill(code, w.imageId, w.layers).catch(err => console.warn('Could not fill', code, err));

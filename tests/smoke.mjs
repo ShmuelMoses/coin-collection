@@ -1664,7 +1664,24 @@ console.log('\nA photo of your own as a country\'s fill');
         !/patternUnits', 'objectBoundingBox/.test(mapjs3),
         'objectBoundingBox follows the CLIPPED path and moves with the zoom');
     check('it is measured from the country, not from the path that was drawn',
-        /leafletMap\.latLngToLayerPoint\(entry\.bounds\.getNorthWest\(\)\)/.test(mapjs3));
+        /leafletMap\.latLngToLayerPoint\(bounds\.getNorthWest\(\)\)/.test(mapjs3) &&
+        /const box = boxFor\(entry\.bounds\);/.test(mapjs3));
+    // The fills are a second set of shapes over the canvas map, and Leaflet
+    // re-projects every shape it holds whenever the view changes. A hundred and
+    // twenty of them, most off screen or too small to see, were being re-laid
+    // out at the end of every zoom - which is what made zooming slow.
+    check('only the landmasses actually on screen are attached to the map',
+        /const view = leafletMap\.getBounds\(\)\.pad\(0\.3\);/.test(mapjs3) &&
+        /view\.intersects\(target\.bounds\) &&/.test(mapjs3) &&
+        />= MIN_FILL_PX;/.test(mapjs3),
+        'every fill in the collection was re-projected on every zoom');
+    check('and the ones that leave the view are detached again',
+        /if \(!wanted\) \{ hideFill\(target\); return; \}/.test(mapjs3) &&
+        /fillGroup\.removeLayer\(entry\.shape\)/.test(mapjs3));
+    check('but the shape itself is kept, not rebuilt every time',
+        /if \(!target\.entry\) createFill\(target\);/.test(mapjs3) &&
+        /entry\.attached = false;/.test(mapjs3),
+        'turning the rings back into Leaflet points is most of the work');
     check('and put back in place whenever the map moves',
         /leafletMap\.on\('zoomend viewreset moveend', repositionFills\)/.test(mapjs3));
     check('the note covers the country rather than sitting inside it',
@@ -1697,7 +1714,7 @@ console.log('\nA photo of your own as a country\'s fill');
         /!L\.LineUtil\.isFlat\(latlngs\[0\]\)\) return latlngs;/.test(mapjs6),
         'one box around the mainland AND the islands is mostly sea');
     check('and each landmass gets a pattern of its own',
-        /const id = `\$\{PATTERN_ID\(code\)\}-\$\{n\+\+\}`;/.test(mapjs6) &&
+        /key: `\$\{PATTERN_ID\(code\)\}-\$\{n\+\+\}`/.test(mapjs6) &&
         /worthFilling\(pieces\)\.forEach/.test(mapjs6));
 
     check('a country of one shape keeps that shape',
@@ -1711,17 +1728,30 @@ console.log('\nA photo of your own as a country\'s fill');
     // a thousand pixels across.
     const mapjs5 = (await import('node:fs')).readFileSync('./js/map.js', 'utf8');
     check('the photo is only fetched at full size once something is drawn bigger than the thumbnail',
-        /Math\.max\(box\.w, box\.h\) <= SHARPEN_ABOVE_PX\) return;/.test(mapjs5) &&
+        /Math\.max\(w, h\) > SHARPEN_ABOVE_PX\) sharpenOne\(entry\);/.test(mapjs5) &&
         /const SHARPEN_ABOVE_PX = 3\d\d;/.test(mapjs5),
         'every photo would be downloaded at full size on opening the map');
+    // Zooming fires the reposition over and over. Fetching and decoding a
+    // full-size photo in the middle of that is what made the photo map stutter.
+    check('and only while the map is standing still',
+        /let sharpenTimer = null;/.test(mapjs5) &&
+        /if \(sharpenTimer\) clearTimeout\(sharpenTimer\);/.test(mapjs5) &&
+        /const SHARPEN_IDLE_MS = \d+;/.test(mapjs5),
+        'a zoom would fetch and decode photos while it was still moving');
+    check('the face is located ONCE, on the thumbnail, and reused on the big photo',
+        /faceRects\.set\(imageId, \{ fx: rect\.x \/ w/.test(mapjs5) &&
+        /const frac = faceRects\.get\(imageId\)/.test(mapjs5) &&
+        (mapjs5.match(/frontSideRect\(ctx\.getImageData/g) || []).length === 1,
+        'scanning twelve million pixels of a phone photo blocks the map');
+    check('the big photo is decoded and shrunk off the main thread',
+        /await createImageBitmap\(blob\)/.test(mapjs5) &&
+        /resizeWidth: dw, resizeHeight: dh, resizeQuality: 'high'/.test(mapjs5));
     check('and fetched once per photo, however many landmasses wear it',
         /if \(sharpPending\.has\(id\) \|\| state\.offline \|\| !state\.online\) return;/.test(mapjs5) &&
         /sharpPending\.add\(id\);/.test(mapjs5));
     check('the better photo is shrunk to something a screen can show',
-        /const SHARP_MAX_PX = 1500;/.test(mapjs5) && /cutFrontFace\(img, SHARP_MAX_PX\)/.test(mapjs5));
-    check('and it is cut to one face like the thumbnail was',
-        /async function cutFrontFace\(img, maxPx\)/.test(mapjs5) &&
-        /frontSideRect\(ctx\.getImageData/.test(mapjs5));
+        /const SHARP_MAX_PX = 1200;/.test(mapjs5) &&
+        /SHARP_MAX_PX \/ Math\.max\(sw, sh\)/.test(mapjs5));
     check('the photos it builds are object URLs, and every one is released',
         /fillUrls\.add\(url\)/.test(mapjs5) &&
         /fillUrls\.forEach\(url => URL\.revokeObjectURL\(url\)\)/.test(mapjs5),
